@@ -33,7 +33,8 @@ body {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
   background: radial-gradient(circle at 30% 20%, #2f4253, #0d131a 56%, #080a0d);
 }
 
