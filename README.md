@@ -38,11 +38,11 @@ make backend-dev
 make serve
 ```
 
-5. Open `http://localhost:8080`.
+5. Open `http://127.0.0.1:8080`.
 
 ## Useful Commands
 
-- `make serve`: serve `web/` on `PORT` from `.env` (default `8080`)
+- `make serve`: serve `web/` on `WEB_HOST:PORT` (defaults `127.0.0.1:8080`)
 - `make check`: run `node --check` on `web/app.js`
 - `make backend-install`: install backend dependencies
 - `make backend-dev`: run backend in watch mode

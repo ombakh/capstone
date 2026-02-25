@@ -4,12 +4,13 @@ export
 endif
 
 PORT ?= 8080
+WEB_HOST ?= 127.0.0.1
 
 .PHONY: help serve check run backend-install backend-ensure backend-dev backend-start
 
 help:
 	@echo "Available targets:"
-	@echo "  make serve  - Serve web app at http://localhost:$(PORT)"
+	@echo "  make serve  - Serve web app at http://$(WEB_HOST):$(PORT)"
 	@echo "  make check  - Run JavaScript syntax check"
 	@echo "  make run    - Run web server and backend together"
 	@echo "  make backend-install - Install backend dependencies"
@@ -18,7 +19,7 @@ help:
 	@echo "  make help   - Show this help message"
 
 serve:
-	python3 -m http.server $(PORT) --directory web
+	python3 -m http.server $(PORT) --bind $(WEB_HOST) --directory web
 
 check:
 	node --check web/app.js
