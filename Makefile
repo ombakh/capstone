@@ -5,7 +5,7 @@ endif
 
 PORT ?= 8080
 
-.PHONY: help serve check run backend-install backend-dev backend-start
+.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start
 
 help:
 	@echo "Available targets:"
@@ -32,8 +32,14 @@ run:
 backend-install:
 	cd backend && npm install
 
-backend-dev:
+backend-ensure:
+	@if [ ! -d backend/node_modules/cors ] || [ ! -d backend/node_modules/express ] || [ ! -d backend/node_modules/ws ] || [ ! -d backend/node_modules/dotenv ]; then \
+		echo "backend dependencies missing; running npm install..."; \
+		$(MAKE) backend-install; \
+	fi
+
+backend-dev: backend-ensure
 	cd backend && npm run dev
 
-backend-start:
+backend-start: backend-ensure
 	cd backend && npm start
