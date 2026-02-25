@@ -16,14 +16,26 @@
           <span class="lidar-label">LiDAR</span>
         </div>
 
-        <button id="switch-camera" class="switch-camera" type="button" aria-label="Switch camera">
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M17 8a5 5 0 0 0-8.5-3.5" />
-            <path d="M7 8V5h3" />
-            <path d="M7 16a5 5 0 0 0 8.5 3.5" />
-            <path d="M17 16v3h-3" />
-          </svg>
-        </button>
+        <div id="secondary-feed-shell" class="secondary-feed-shell" aria-label="Secondary camera feed">
+          <video id="secondary-feed" class="secondary-feed" autoplay playsinline muted></video>
+          <button id="switch-camera" class="switch-camera" type="button" aria-label="Switch camera">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M17 8a5 5 0 0 0-8.5-3.5" />
+              <path d="M7 8V5h3" />
+              <path d="M7 16a5 5 0 0 0 8.5 3.5" />
+              <path d="M17 16v3h-3" />
+            </svg>
+          </button>
+          <button
+            id="secondary-toggle"
+            class="secondary-toggle"
+            type="button"
+            aria-label="Hide secondary camera feed"
+            aria-expanded="true"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+        </div>
       </div>
 
       <div class="controls" aria-label="Arrow controls">
