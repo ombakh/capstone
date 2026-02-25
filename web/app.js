@@ -3,6 +3,9 @@ const secondaryVideoEl = document.getElementById("secondary-feed");
 const secondaryFeedShell = document.getElementById("secondary-feed-shell");
 const secondaryToggleBtn = document.getElementById("secondary-toggle");
 const switchCameraBtn = document.getElementById("switch-camera");
+const settingsBtn = document.getElementById("settings-button");
+const settingsMenu = document.getElementById("settings-menu");
+const fullCameraViewToggle = document.getElementById("full-camera-view-toggle");
 const controlButtons = new Map(
   [...document.querySelectorAll(".key")].map((btn) => [btn.dataset.key, btn])
 );
@@ -54,6 +57,16 @@ function setSecondaryCollapsed(collapsed) {
 
 function setSecondaryUnavailable(unavailable) {
   secondaryFeedShell.classList.toggle("secondary-unavailable", unavailable);
+}
+
+function setSettingsOpen(open) {
+  settingsMenu.classList.toggle("open", open);
+  settingsBtn.setAttribute("aria-expanded", String(open));
+}
+
+function setFullCameraView(enabled) {
+  videoEl.classList.toggle("full-view", enabled);
+  fullCameraViewToggle.checked = enabled;
 }
 
 async function startCameraFeeds() {
@@ -127,6 +140,20 @@ function setupEvents() {
     await startCameraFeeds();
   });
 
+  settingsBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const isOpen = settingsMenu.classList.contains("open");
+    setSettingsOpen(!isOpen);
+  });
+
+  settingsMenu.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  fullCameraViewToggle.addEventListener("change", (event) => {
+    setFullCameraView(event.target.checked);
+  });
+
   secondaryToggleBtn.addEventListener("click", () => {
     setSecondaryCollapsed(!state.secondaryCollapsed);
   });
@@ -140,11 +167,21 @@ function setupEvents() {
 
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("pointerdown", (event) => {
+    if (settingsMenu.contains(event.target) || settingsBtn.contains(event.target)) return;
+    setSettingsOpen(false);
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    setSettingsOpen(false);
+  });
   window.addEventListener("beforeunload", stopCameras);
 }
 
 if (navigator.mediaDevices?.getUserMedia) {
   setupEvents();
+  setSettingsOpen(false);
+  setFullCameraView(false);
   setSecondaryCollapsed(false);
   startCameraFeeds();
 } else {
