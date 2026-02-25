@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Camera Control Overlay</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app">
+    <video id="camera-feed" class="camera-feed" autoplay playsinline muted></video>
+    <div class="overlay">
+      <div class="top-right">
+        <div class="lidar-map" aria-label="LiDAR map placeholder">
+          <div class="lidar-grid"></div>
+          <span class="lidar-label">LiDAR</span>
+        </div>
+        <button id="switch-camera" class="switch-camera" type="button" aria-label="Switch camera">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M7 7h2.2l1.4-2h2.8l1.4 2H17a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3Zm5 2.8a4.2 4.2 0 1 0 0 8.4 4.2 4.2 0 0 0 0-8.4Zm4.4 4.2a4.4 4.4 0 0 1-6.8 3.7l1.2-1.2H8.8V19h2.5l-1.1-1.1a3 3 0 1 0 4.6-2.5h1.6Zm-3.2-3.8L14.3 9h-2.5l1.1 1.1a3 3 0 1 0-4.6 2.5H6.7a4.4 4.4 0 0 1 6.8-3.7Z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="controls" aria-label="Arrow controls">
+        <button class="key key-up" data-key="ArrowUp" type="button" aria-label="Up">▲</button>
+        <button class="key key-left" data-key="ArrowLeft" type="button" aria-label="Left">◀</button>
+        <button class="key key-right" data-key="ArrowRight" type="button" aria-label="Right">▶</button>
+        <button class="key key-down" data-key="ArrowDown" type="button" aria-label="Down">▼</button>
+      </div>
+    </div>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
