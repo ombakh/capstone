@@ -16,14 +16,20 @@ Browser-based camera overlay app with on-screen directional controls, a LiDAR ma
 
 ## Quick Start
 
-1. Update values in `.env` if needed.
-2. Start the web app:
+1. Create a local env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Update values in `.env` if needed.
+3. Start the web app:
 
 ```bash
 make serve
 ```
 
-3. Open `http://localhost:8080`.
+4. Open `http://localhost:8080`.
 
 ## Useful Commands
 
