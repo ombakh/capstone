@@ -18,6 +18,7 @@ const config = {
 };
 
 const WS_OPEN = 1;
+const DRIVE_DIRECTIONS = new Set(["forward", "reverse", "left", "right", "stop"]);
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -138,6 +139,37 @@ function normalizeUiCommand(input) {
   };
 }
 
+function normalizeDriveCommand(input) {
+  ensureObject(input, "drive");
+  const deviceId = String(input.deviceId || "").trim();
+  const direction = String(input.direction || "").trim().toLowerCase();
+
+  if (!deviceId) {
+    throw new Error("drive.deviceId is required");
+  }
+  if (!DRIVE_DIRECTIONS.has(direction)) {
+    throw new Error("drive.direction must be one of forward|reverse|left|right|stop");
+  }
+
+  let speed = Number(input.speed ?? 0.55);
+  if (!Number.isFinite(speed)) speed = 0.55;
+  speed = Math.min(1, Math.max(0, speed));
+
+  let durationMs = Number(input.durationMs ?? 0);
+  if (!Number.isFinite(durationMs) || durationMs < 0) durationMs = 0;
+  durationMs = Math.floor(durationMs);
+
+  return normalizeUiCommand({
+    deviceId,
+    command: "drive",
+    params: {
+      direction,
+      speed,
+      durationMs
+    }
+  });
+}
+
 function recordEvent(event) {
   const device = getDeviceState(event.deviceId);
   device.lastSeenAt = event.receivedAt;
@@ -188,6 +220,19 @@ function sendCommandToPi(command) {
   const piSocket = piClients.get(command.deviceId);
   if (!piSocket || piSocket.readyState !== WS_OPEN) return false;
   return safeJsonSend(piSocket, { type: "ui:command", command });
+}
+
+function acceptCommand(command) {
+  const delivered = sendCommandToPi(command);
+  if (!delivered) {
+    queueCommand(command);
+  } else {
+    const device = getDeviceState(command.deviceId);
+    device.lastCommandAt = command.createdAt;
+  }
+
+  broadcastToUi({ type: "command:accepted", command, delivered });
+  return delivered;
 }
 
 function broadcastToUi(message) {
@@ -251,20 +296,28 @@ app.post("/api/pi/event", requirePiAuth, (req, res) => {
 app.post("/api/ui/command", (req, res) => {
   try {
     const command = normalizeUiCommand(req.body);
-    const delivered = sendCommandToPi(command);
-    if (!delivered) {
-      queueCommand(command);
-    } else {
-      const device = getDeviceState(command.deviceId);
-      device.lastCommandAt = command.createdAt;
-    }
-
-    broadcastToUi({ type: "command:accepted", command, delivered });
+    const delivered = acceptCommand(command);
     res.status(202).json({
       ok: true,
       delivered,
       queued: !delivered,
       commandId: command.id
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/api/ui/drive", (req, res) => {
+  try {
+    const command = normalizeDriveCommand(req.body);
+    const delivered = acceptCommand(command);
+    res.status(202).json({
+      ok: true,
+      delivered,
+      queued: !delivered,
+      commandId: command.id,
+      command
     });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -336,9 +389,7 @@ wsServer.on("connection", (socket, request) => {
       if (message.type !== "ui:command") return;
       try {
         const command = normalizeUiCommand(message.command || {});
-        const delivered = sendCommandToPi(command);
-        if (!delivered) queueCommand(command);
-        broadcastToUi({ type: "command:accepted", command, delivered });
+        acceptCommand(command);
       } catch {
         // Invalid command payload is ignored on WS path.
       }

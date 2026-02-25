@@ -27,6 +27,7 @@ Server defaults to `http://localhost:3000`.
 - `GET /api/state`: latest in-memory snapshot
 - `POST /api/pi/event`: ingest Pi event payload
 - `POST /api/ui/command`: send command to a Pi device
+- `POST /api/ui/drive`: validated drive command helper endpoint
 
 ### `POST /api/pi/event` payload
 
@@ -51,6 +52,17 @@ Server defaults to `http://localhost:3000`.
     "direction": "forward",
     "speed": 0.6
   }
+}
+```
+
+### `POST /api/ui/drive` payload
+
+```json
+{
+  "deviceId": "pi-01",
+  "direction": "forward",
+  "speed": 0.6,
+  "durationMs": 0
 }
 ```
 

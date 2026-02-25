@@ -6,8 +6,9 @@ Browser-based camera overlay app with on-screen directional controls, a LiDAR ma
 
 - `backend/`: realtime gateway (Pi ingest + UI commands/streaming)
 - `web/`: static frontend app (`index.html`, `styles.css`, `app.js`)
-- `esp/`: reserved for ESP-side code
-- `pi/`: reserved for Raspberry Pi-side code
+- `pi/`: Raspberry Pi gateway base (`gateway.py`)
+- `esp/`: ESP32 motor-control base sketch
+- `docs/`: system architecture + protocol notes
 
 ## Requirements
 
@@ -43,8 +44,17 @@ make serve
 ## Useful Commands
 
 - `make serve`: serve `web/` on `WEB_HOST:PORT` (defaults `127.0.0.1:8080`)
+- `make run`: run web and backend together
 - `make check`: run `node --check` on `web/app.js`
 - `make backend-install`: install backend dependencies
 - `make backend-dev`: run backend in watch mode
 - `make backend-start`: run backend without watch mode
+- `make pi-install`: install Pi gateway dependencies
+- `make pi-run`: run Pi gateway
 - `make help`: list available targets
+
+## Edge Base
+
+- Pi gateway starter: [pi/README.md](/Users/ombakhshi/WebstormProjects/capstone/pi/README.md)
+- ESP32 starter sketch: [esp/README.md](/Users/ombakhshi/WebstormProjects/capstone/esp/README.md)
+- End-to-end flow: [docs/edge-system-base.md](/Users/ombakhshi/WebstormProjects/capstone/docs/edge-system-base.md)

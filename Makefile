@@ -6,7 +6,7 @@ endif
 PORT ?= 8080
 WEB_HOST ?= 127.0.0.1
 
-.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start
+.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pi-install pi-run
 
 help:
 	@echo "Available targets:"
@@ -16,6 +16,8 @@ help:
 	@echo "  make backend-install - Install backend dependencies"
 	@echo "  make backend-dev     - Run backend in watch mode"
 	@echo "  make backend-start   - Run backend"
+	@echo "  make pi-install      - Install Raspberry Pi gateway deps"
+	@echo "  make pi-run          - Run Raspberry Pi gateway"
 	@echo "  make help   - Show this help message"
 
 serve:
@@ -44,3 +46,9 @@ backend-dev: backend-ensure
 
 backend-start: backend-ensure
 	cd backend && npm start
+
+pi-install:
+	python3 -m pip install -r pi/requirements.txt
+
+pi-run:
+	python3 pi/gateway.py
