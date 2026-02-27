@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <math.h>
 
 // Wiring:
 // Left LED  anode -> resistor -> GPIO2, cathode -> GND
@@ -10,11 +11,14 @@ constexpr int RIGHT_LED_CHANNEL = 1;
 constexpr int PWM_FREQUENCY_HZ = 5000;
 constexpr int PWM_RESOLUTION_BITS = 8;
 constexpr int PWM_MAX = (1 << PWM_RESOLUTION_BITS) - 1;
+constexpr float TWO_PI_F = 6.28318530718f;
 
-constexpr unsigned long BLINK_INTERVAL_MS = 250;
-constexpr unsigned long FADE_DURATION_MS = 180;
+constexpr unsigned long DOWN_BLINK_PERIOD_MS = 800;
+constexpr unsigned long FADE_DURATION_MS = 420;
+constexpr unsigned long MODE_TRANSITION_MS = 280;
 // Terminal arrow input usually has no explicit key-up event; use key-repeat silence as release.
-constexpr unsigned long KEY_RELEASE_TIMEOUT_MS = 650;
+// Keep this above typical initial key-repeat delay to avoid false release flicker.
+constexpr unsigned long KEY_RELEASE_TIMEOUT_MS = 700;
 
 enum class LedMode {
     Off,
@@ -31,36 +35,73 @@ enum class EscapeState {
 };
 
 EscapeState escapeState = EscapeState::Idle;
-LedMode pressedMode = LedMode::Off;
-LedMode renderMode = LedMode::Off;
+LedMode activeMode = LedMode::Off;
 bool keyIsPressed = false;
-bool blinkOn = true;
-int brightness = 0;
-unsigned long lastBlinkToggleMs = 0;
-unsigned long lastFadeUpdateMs = 0;
+int pressLevel = 0;
+int leftOutput = 0;
+int rightOutput = 0;
 unsigned long lastKeyActivityMs = 0;
+unsigned long lastLoopUpdateMs = 0;
+unsigned long downBlinkStartMs = 0;
 
 void setLedBrightness(int left, int right) {
     ledcWrite(LEFT_LED_CHANNEL, left);
     ledcWrite(RIGHT_LED_CHANNEL, right);
 }
 
+int stepForElapsed(unsigned long elapsed, unsigned long durationMs) {
+    if (durationMs == 0) {
+        return PWM_MAX;
+    }
+
+    int step = static_cast<int>((static_cast<unsigned long>(PWM_MAX) * elapsed + durationMs - 1) / durationMs);
+    if (step < 1) {
+        step = 1;
+    }
+    return step;
+}
+
+int moveTowards(int current, int target, int step) {
+    if (current < target) {
+        current += step;
+        if (current > target) {
+            current = target;
+        }
+    } else if (current > target) {
+        current -= step;
+        if (current < target) {
+            current = target;
+        }
+    }
+    return current;
+}
+
+int computeDownPulse(unsigned long now) {
+    const unsigned long phaseMs = (now - downBlinkStartMs) % DOWN_BLINK_PERIOD_MS;
+    const float phase = static_cast<float>(phaseMs) / static_cast<float>(DOWN_BLINK_PERIOD_MS);
+    const float pulse = 0.5f + 0.5f * cosf(phase * TWO_PI_F);  // 0..1 smooth blink curve
+    int value = static_cast<int>(pulse * static_cast<float>(PWM_MAX) + 0.5f);
+    if (value < 0) {
+        value = 0;
+    } else if (value > PWM_MAX) {
+        value = PWM_MAX;
+    }
+    return value;
+}
+
 void registerPress(LedMode mode, const char *label) {
     const unsigned long now = millis();
 
-    if (!keyIsPressed || pressedMode != mode) {
+    if (!keyIsPressed || activeMode != mode) {
         Serial.printf("Pressed: %s\n", label);
     }
 
     keyIsPressed = true;
-    pressedMode = mode;
-    renderMode = mode;
-    lastKeyActivityMs = now;
-
-    if (mode == LedMode::BothBlink) {
-        blinkOn = true;
-        lastBlinkToggleMs = now;
+    if (mode == LedMode::BothBlink && activeMode != LedMode::BothBlink) {
+        downBlinkStartMs = now;
     }
+    activeMode = mode;
+    lastKeyActivityMs = now;
 }
 
 void updatePressState(unsigned long now) {
@@ -70,79 +111,44 @@ void updatePressState(unsigned long now) {
     }
 }
 
-void updateBrightness(unsigned long now) {
-    if (lastFadeUpdateMs == 0) {
-        lastFadeUpdateMs = now;
-    }
-
-    const unsigned long elapsed = now - lastFadeUpdateMs;
-    if (elapsed == 0) {
-        return;
-    }
-    lastFadeUpdateMs = now;
-
-    const int targetBrightness = keyIsPressed ? PWM_MAX : 0;
-    int step = static_cast<int>((static_cast<unsigned long>(PWM_MAX) * elapsed + FADE_DURATION_MS - 1) /
-                                FADE_DURATION_MS);
-    if (step < 1) {
-        step = 1;
-    }
-
-    if (brightness < targetBrightness) {
-        brightness += step;
-        if (brightness > targetBrightness) {
-            brightness = targetBrightness;
-        }
-    } else if (brightness > targetBrightness) {
-        brightness -= step;
-        if (brightness < targetBrightness) {
-            brightness = targetBrightness;
-        }
-    }
-
-    if (!keyIsPressed && brightness == 0) {
-        renderMode = LedMode::Off;
-    }
+void updatePressLevel(unsigned long elapsed) {
+    const int target = keyIsPressed ? PWM_MAX : 0;
+    const int step = stepForElapsed(elapsed, FADE_DURATION_MS);
+    pressLevel = moveTowards(pressLevel, target, step);
 }
 
-void updateBlink(unsigned long now) {
-    if (renderMode != LedMode::BothBlink || brightness == 0) {
-        blinkOn = true;
-        return;
+void computeTargets(unsigned long now, int &leftTarget, int &rightTarget) {
+    leftTarget = 0;
+    rightTarget = 0;
+
+    int effectiveLevel = pressLevel;
+    if (activeMode == LedMode::BothBlink) {
+        const int pulse = computeDownPulse(now);
+        effectiveLevel = (pressLevel * pulse) / PWM_MAX;
     }
 
-    if (now - lastBlinkToggleMs >= BLINK_INTERVAL_MS) {
-        lastBlinkToggleMs = now;
-        blinkOn = !blinkOn;
-    }
-}
-
-void renderLeds() {
-    int left = 0;
-    int right = 0;
-
-    switch (renderMode) {
+    switch (activeMode) {
         case LedMode::Off:
             break;
         case LedMode::LeftOnly:
-            left = brightness;
+            leftTarget = effectiveLevel;
             break;
         case LedMode::RightOnly:
-            right = brightness;
+            rightTarget = effectiveLevel;
             break;
         case LedMode::BothOn:
-            left = brightness;
-            right = brightness;
-            break;
         case LedMode::BothBlink:
-            if (blinkOn) {
-                left = brightness;
-                right = brightness;
-            }
+            leftTarget = effectiveLevel;
+            rightTarget = effectiveLevel;
             break;
     }
+}
 
-    setLedBrightness(left, right);
+void updateLedOutputs(unsigned long elapsed, int leftTarget, int rightTarget) {
+    const int transitionStep = stepForElapsed(elapsed, MODE_TRANSITION_MS);
+    leftOutput = moveTowards(leftOutput, leftTarget, transitionStep);
+    rightOutput = moveTowards(rightOutput, rightTarget, transitionStep);
+    setLedBrightness(leftOutput, rightOutput);
 }
 
 void handleArrowEscapeCode(char code) {
@@ -194,20 +200,32 @@ void setup() {
 
     Serial.println("Ready. Press arrow keys in your serial terminal:");
     Serial.println("Left  = left LED, Right = right LED");
-    Serial.println("Up    = both LEDs on, Down = both LEDs blink");
+    Serial.println("Up    = both LEDs on, Down = both LEDs smooth blink");
     Serial.println("LEDs fade in on press and fade out after key release.");
 }
 
 void loop() {
-    const unsigned long now = millis();
-
     while (Serial.available() > 0) {
         const char ch = static_cast<char>(Serial.read());
         processSerialByte(ch);
     }
 
+    const unsigned long now = millis();
+    if (lastLoopUpdateMs == 0) {
+        lastLoopUpdateMs = now;
+    }
+    const unsigned long elapsed = now - lastLoopUpdateMs;
+    lastLoopUpdateMs = now;
+
     updatePressState(now);
-    updateBrightness(now);
-    updateBlink(now);
-    renderLeds();
+    updatePressLevel(elapsed);
+
+    int leftTarget = 0;
+    int rightTarget = 0;
+    computeTargets(now, leftTarget, rightTarget);
+    updateLedOutputs(elapsed, leftTarget, rightTarget);
+
+    if (!keyIsPressed && pressLevel == 0 && leftOutput == 0 && rightOutput == 0) {
+        activeMode = LedMode::Off;
+    }
 }
