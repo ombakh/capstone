@@ -30,6 +30,26 @@ sudo apt-get install -y python3-opencv
 python3 gateway.py
 ```
 
+## Direct Arrow-Key Control (Pi -> ESP32)
+
+Use this when you want to drive LED behavior directly from the Pi terminal
+without running the backend/web stack.
+
+```bash
+python3 arrow_serial_bridge.py --port /dev/ttyUSB0 --baud 115200
+```
+
+Controls:
+
+- Left arrow: left LED
+- Right arrow: right LED
+- Up arrow: both LEDs on
+- Down arrow: both LEDs smooth blink
+- `q`: quit bridge
+
+The ESP firmware interprets ANSI arrow escape sequences, so this script sends
+`ESC [ A/B/C/D` over serial to match `esp/src/main.cpp`.
+
 ## Environment Variables
 
 - `BACKEND_WS_BASE` default: `ws://127.0.0.1:3000`
