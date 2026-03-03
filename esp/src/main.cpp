@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <math.h>
+#include <string.h>
 
 // Wiring:
 // Left LED  anode -> resistor -> GPIO2, cathode -> GND
@@ -19,6 +20,7 @@ constexpr unsigned long MODE_TRANSITION_MS = 280;
 // Terminal arrow input usually has no explicit key-up event; use key-repeat silence as release.
 // Keep this above typical initial key-repeat delay to avoid false release flicker.
 constexpr unsigned long KEY_RELEASE_TIMEOUT_MS = 700;
+constexpr size_t SERIAL_LINE_BUFFER_SIZE = 256;
 
 enum class LedMode {
     Off,
@@ -43,6 +45,8 @@ int rightOutput = 0;
 unsigned long lastKeyActivityMs = 0;
 unsigned long lastLoopUpdateMs = 0;
 unsigned long downBlinkStartMs = 0;
+char serialLineBuffer[SERIAL_LINE_BUFFER_SIZE] = {0};
+size_t serialLineLength = 0;
 
 void setLedBrightness(int left, int right) {
     ledcWrite(LEFT_LED_CHANNEL, left);
@@ -104,10 +108,16 @@ void registerPress(LedMode mode, const char *label) {
     lastKeyActivityMs = now;
 }
 
+void registerRelease(const char *label) {
+    if (keyIsPressed) {
+        Serial.printf("Released: %s\n", label);
+    }
+    keyIsPressed = false;
+}
+
 void updatePressState(unsigned long now) {
     if (keyIsPressed && now - lastKeyActivityMs > KEY_RELEASE_TIMEOUT_MS) {
-        keyIsPressed = false;
-        Serial.println("Released");
+        registerRelease("TIMEOUT");
     }
 }
 
@@ -170,21 +180,79 @@ void handleArrowEscapeCode(char code) {
     }
 }
 
+bool commandLineContains(const char *line, const char *token) {
+    return strstr(line, token) != nullptr;
+}
+
+void handleJsonCommandLine(const char *line) {
+    if (!commandLineContains(line, "\"type\":\"command\"")) {
+        return;
+    }
+
+    if (commandLineContains(line, "\"command\":\"stop\"")) {
+        registerRelease("STOP");
+        return;
+    }
+
+    if (!commandLineContains(line, "\"command\":\"drive\"")) {
+        return;
+    }
+
+    if (commandLineContains(line, "\"direction\":\"forward\"")) {
+        registerPress(LedMode::BothOn, "FORWARD");
+    } else if (commandLineContains(line, "\"direction\":\"reverse\"")) {
+        registerPress(LedMode::BothBlink, "REVERSE");
+    } else if (commandLineContains(line, "\"direction\":\"left\"")) {
+        registerPress(LedMode::LeftOnly, "LEFT");
+    } else if (commandLineContains(line, "\"direction\":\"right\"")) {
+        registerPress(LedMode::RightOnly, "RIGHT");
+    } else if (commandLineContains(line, "\"direction\":\"stop\"")) {
+        registerRelease("DRIVE_STOP");
+    }
+}
+
+void flushSerialLineBuffer() {
+    if (serialLineLength == 0) {
+        return;
+    }
+    serialLineBuffer[serialLineLength] = '\0';
+    handleJsonCommandLine(serialLineBuffer);
+    serialLineLength = 0;
+}
+
 void processSerialByte(char ch) {
-    // Arrow keys are ANSI escape sequences: ESC [ A/B/C/D.
-    switch (escapeState) {
-        case EscapeState::Idle:
-            if (ch == 0x1B) {
-                escapeState = EscapeState::SawEsc;
-            }
-            break;
-        case EscapeState::SawEsc:
-            escapeState = (ch == '[') ? EscapeState::SawBracket : EscapeState::Idle;
-            break;
-        case EscapeState::SawBracket:
-            handleArrowEscapeCode(ch);
-            escapeState = EscapeState::Idle;
-            break;
+    if (escapeState != EscapeState::Idle || ch == 0x1B) {
+        // Arrow keys are ANSI escape sequences: ESC [ A/B/C/D.
+        switch (escapeState) {
+            case EscapeState::Idle:
+                if (ch == 0x1B) {
+                    escapeState = EscapeState::SawEsc;
+                }
+                break;
+            case EscapeState::SawEsc:
+                escapeState = (ch == '[') ? EscapeState::SawBracket : EscapeState::Idle;
+                break;
+            case EscapeState::SawBracket:
+                handleArrowEscapeCode(ch);
+                escapeState = EscapeState::Idle;
+                break;
+        }
+        return;
+    }
+
+    if (ch == '\r') {
+        return;
+    }
+    if (ch == '\n') {
+        flushSerialLineBuffer();
+        return;
+    }
+
+    if (serialLineLength < SERIAL_LINE_BUFFER_SIZE - 1) {
+        serialLineBuffer[serialLineLength++] = ch;
+    } else {
+        // Drop oversized line payloads and wait for newline to resync.
+        serialLineLength = 0;
     }
 }
 
@@ -198,7 +266,7 @@ void setup() {
     Serial.begin(115200);
     delay(200);
 
-    Serial.println("Ready. Press arrow keys in your serial terminal:");
+    Serial.println("Ready. Arrow escape and JSON command input are both supported.");
     Serial.println("Left  = left LED, Right = right LED");
     Serial.println("Up    = both LEDs on, Down = both LEDs smooth blink");
     Serial.println("LEDs fade in on press and fade out after key release.");

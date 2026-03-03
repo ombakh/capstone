@@ -17,6 +17,111 @@ const state = {
   secondaryCollapsed: false
 };
 
+const DRIVE_KEY_TO_DIRECTION = {
+  ArrowUp: "forward",
+  ArrowDown: "reverse",
+  ArrowLeft: "left",
+  ArrowRight: "right"
+};
+
+const urlParams = new URLSearchParams(window.location.search);
+
+function resolveBackendWsUrl() {
+  const explicitWsUrl = urlParams.get("backendWs");
+  if (explicitWsUrl) return explicitWsUrl;
+
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const host = urlParams.get("backendHost") || window.location.hostname || "127.0.0.1";
+  const port = urlParams.get("backendPort") || "3000";
+  return `${protocol}://${host}:${port}/ws?role=ui`;
+}
+
+function resolveDeviceId() {
+  return urlParams.get("deviceId") || "pi-01";
+}
+
+const backend = {
+  ws: null,
+  wsUrl: resolveBackendWsUrl(),
+  deviceId: resolveDeviceId(),
+  reconnectTimer: null
+};
+
+const driveState = {
+  activeKey: null,
+  speed: 0.55
+};
+
+function connectBackendSocket() {
+  if (backend.ws && (backend.ws.readyState === WebSocket.OPEN || backend.ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const ws = new WebSocket(backend.wsUrl);
+  backend.ws = ws;
+
+  ws.addEventListener("open", () => {
+    console.info("Connected to backend control socket.");
+  });
+
+  ws.addEventListener("close", () => {
+    if (backend.ws !== ws) return;
+    backend.ws = null;
+    window.clearTimeout(backend.reconnectTimer);
+    backend.reconnectTimer = window.setTimeout(connectBackendSocket, 1500);
+  });
+
+  ws.addEventListener("error", () => {
+    ws.close();
+  });
+}
+
+function sendBackendMessage(payload) {
+  if (!backend.ws || backend.ws.readyState !== WebSocket.OPEN) return false;
+  backend.ws.send(JSON.stringify(payload));
+  return true;
+}
+
+function sendDriveCommand(command, params = {}) {
+  const sent = sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command,
+      params
+    }
+  });
+
+  if (!sent) {
+    console.warn("Unable to send command: backend socket is not connected.");
+  }
+}
+
+function startDrive(key) {
+  const direction = DRIVE_KEY_TO_DIRECTION[key];
+  if (!direction) return;
+  if (driveState.activeKey === key) return;
+
+  driveState.activeKey = key;
+  sendDriveCommand("drive", {
+    direction,
+    speed: driveState.speed,
+    durationMs: 0
+  });
+}
+
+function stopDrive(key) {
+  if (driveState.activeKey !== key) return;
+  driveState.activeKey = null;
+  sendDriveCommand("stop");
+}
+
+function stopAllDrive() {
+  if (!driveState.activeKey) return;
+  driveState.activeKey = null;
+  sendDriveCommand("stop");
+}
+
 function getConstraints(facingMode) {
   return {
     audio: false,
@@ -116,22 +221,26 @@ function onKeyDown(event) {
   if (!controlButtons.has(event.key)) return;
   event.preventDefault();
   setPressed(event.key, true);
+  startDrive(event.key);
 }
 
 function onKeyUp(event) {
   if (!controlButtons.has(event.key)) return;
   event.preventDefault();
   setPressed(event.key, false);
+  stopDrive(event.key);
 }
 
 function onControlPressStart(button) {
   if (!button?.dataset?.key) return;
   setPressed(button.dataset.key, true);
+  startDrive(button.dataset.key);
 }
 
 function onControlPressEnd(button) {
   if (!button?.dataset?.key) return;
   setPressed(button.dataset.key, false);
+  stopDrive(button.dataset.key);
 }
 
 function setupEvents() {
@@ -175,15 +284,25 @@ function setupEvents() {
     if (event.key !== "Escape") return;
     setSettingsOpen(false);
   });
-  window.addEventListener("beforeunload", stopCameras);
+  window.addEventListener("blur", () => {
+    controlButtons.forEach((button, key) => setPressed(key, false));
+    stopAllDrive();
+  });
+  window.addEventListener("beforeunload", () => {
+    stopAllDrive();
+    stopCameras();
+  });
 }
 
+setupEvents();
+setSettingsOpen(false);
+setFullCameraView(false);
+setSecondaryCollapsed(false);
+connectBackendSocket();
+
 if (navigator.mediaDevices?.getUserMedia) {
-  setupEvents();
-  setSettingsOpen(false);
-  setFullCameraView(false);
-  setSecondaryCollapsed(false);
   startCameraFeeds();
 } else {
   console.error("Media devices API is not available in this browser.");
+  setSecondaryUnavailable(true);
 }
