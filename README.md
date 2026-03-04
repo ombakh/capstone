@@ -1,6 +1,6 @@
 # Capstone
 
-Browser-based camera overlay app with on-screen directional controls, a LiDAR map placeholder, and camera switching.
+Browser-based camera overlay app with on-screen directional controls, live LiDAR map streaming, and camera switching.
 
 ## Project Layout
 

@@ -6,6 +6,8 @@ const switchCameraBtn = document.getElementById("switch-camera");
 const settingsBtn = document.getElementById("settings-button");
 const settingsMenu = document.getElementById("settings-menu");
 const fullCameraViewToggle = document.getElementById("full-camera-view-toggle");
+const lidarCanvas = document.getElementById("lidar-canvas");
+const lidarStatusEl = document.getElementById("lidar-status");
 const controlButtons = new Map(
   [...document.querySelectorAll(".key")].map((btn) => [btn.dataset.key, btn])
 );
@@ -52,6 +54,215 @@ const driveState = {
   speed: 0.55
 };
 
+const lidarState = {
+  ctx: lidarCanvas ? lidarCanvas.getContext("2d") : null,
+  points: [],
+  maxDistanceMm: 6000,
+  lastScanAtMs: 0,
+  staleAfterMs: 2500,
+  staleStatusEnabled: true,
+  sweepAngleRad: 0,
+  lastRenderAtMs: 0,
+  lastWidth: 0,
+  lastHeight: 0,
+  lastDevicePixelRatio: 0
+};
+
+function setLidarStatus(text, mode = "warn") {
+  if (!lidarStatusEl) return;
+  lidarStatusEl.textContent = text;
+  lidarStatusEl.classList.remove("live", "warn");
+  lidarStatusEl.classList.add(mode === "live" ? "live" : "warn");
+}
+
+function syncLidarCanvasSize() {
+  if (!lidarCanvas || !lidarState.ctx) return;
+
+  const rect = lidarCanvas.getBoundingClientRect();
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+
+  if (
+    width === lidarState.lastWidth &&
+    height === lidarState.lastHeight &&
+    dpr === lidarState.lastDevicePixelRatio
+  ) {
+    return;
+  }
+
+  lidarCanvas.width = width;
+  lidarCanvas.height = height;
+  lidarState.lastWidth = width;
+  lidarState.lastHeight = height;
+  lidarState.lastDevicePixelRatio = dpr;
+}
+
+function updateLidarScan(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (!Array.isArray(payload.points)) return;
+
+  const points = payload.points
+    .map((entry) => {
+      if (!Array.isArray(entry) || entry.length < 2) return null;
+      const angle = Number(entry[0]);
+      const distance = Number(entry[1]);
+      if (!Number.isFinite(angle) || !Number.isFinite(distance) || distance <= 0) return null;
+      return [angle, distance];
+    })
+    .filter(Boolean);
+
+  if (!points.length) return;
+
+  lidarState.points = points;
+  lidarState.lastScanAtMs = Date.now();
+  lidarState.staleStatusEnabled = true;
+
+  const maxDistanceMm = Number(payload.maxDistanceMm);
+  if (Number.isFinite(maxDistanceMm) && maxDistanceMm > 0) {
+    lidarState.maxDistanceMm = maxDistanceMm;
+  }
+
+  setLidarStatus(`LIVE ${points.length} pts`, "live");
+}
+
+function applyLidarStatus(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (payload.connected === true) {
+    lidarState.staleStatusEnabled = true;
+    setLidarStatus("LIDAR ONLINE", "live");
+    return;
+  }
+
+  if (payload.enabled === false) {
+    lidarState.staleStatusEnabled = false;
+    setLidarStatus("LIDAR DISABLED", "warn");
+    return;
+  }
+
+  if (payload.driverAvailable === false) {
+    lidarState.staleStatusEnabled = false;
+    setLidarStatus("LIDAR DRIVER MISSING", "warn");
+    return;
+  }
+
+  if (payload.connected === false) {
+    lidarState.staleStatusEnabled = false;
+    setLidarStatus("LIDAR OFFLINE", "warn");
+  }
+}
+
+function extractLatestLidarScan(events) {
+  if (!Array.isArray(events)) return null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || event.deviceId !== backend.deviceId) continue;
+    if (event.eventType !== "lidar.scan") continue;
+    return event.payload;
+  }
+  return null;
+}
+
+function handleBackendMessage(message) {
+  if (!message || typeof message !== "object") return;
+
+  if (message.type === "snapshot") {
+    const payload = extractLatestLidarScan(message.state?.recentEvents);
+    if (payload) updateLidarScan(payload);
+    return;
+  }
+
+  if (message.type === "pi:status") {
+    if (message.deviceId !== backend.deviceId) return;
+    if (message.status === "offline") {
+      lidarState.staleStatusEnabled = false;
+      setLidarStatus("DEVICE OFFLINE", "warn");
+    }
+    return;
+  }
+
+  if (message.type !== "pi:event") return;
+  const event = message.event;
+  if (!event || typeof event !== "object") return;
+  if (event.deviceId !== backend.deviceId) return;
+
+  if (event.eventType === "lidar.scan") {
+    updateLidarScan(event.payload);
+    return;
+  }
+
+  if (event.eventType === "lidar.status") {
+    applyLidarStatus(event.payload);
+  }
+}
+
+function drawLidarFrame(timestampMs) {
+  if (!lidarState.ctx || !lidarCanvas) return;
+
+  syncLidarCanvasSize();
+
+  const ctx = lidarState.ctx;
+  const width = lidarCanvas.width;
+  const height = lidarCanvas.height;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = Math.min(width, height) * 0.47;
+
+  const elapsedMs = lidarState.lastRenderAtMs ? timestampMs - lidarState.lastRenderAtMs : 16;
+  lidarState.lastRenderAtMs = timestampMs;
+  lidarState.sweepAngleRad = (lidarState.sweepAngleRad + elapsedMs * 0.0032) % (Math.PI * 2);
+
+  ctx.clearRect(0, 0, width, height);
+
+  const bg = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+  bg.addColorStop(0, "rgba(9, 42, 73, 0.42)");
+  bg.addColorStop(1, "rgba(5, 20, 40, 0.08)");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  for (let trail = 0; trail < 7; trail += 1) {
+    const angle = lidarState.sweepAngleRad - trail * 0.07;
+    const alpha = Math.max(0.05, 0.58 - trail * 0.08);
+    const beamX = centerX + Math.cos(angle) * radius;
+    const beamY = centerY + Math.sin(angle) * radius;
+    ctx.strokeStyle = `rgba(161, 255, 208, ${alpha.toFixed(3)})`;
+    ctx.lineWidth = trail === 0 ? 2.4 : 1.3;
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.lineTo(beamX, beamY);
+    ctx.stroke();
+  }
+
+  const maxDistance = Math.max(1, lidarState.maxDistanceMm);
+  const scanAgeMs = lidarState.lastScanAtMs ? Date.now() - lidarState.lastScanAtMs : Infinity;
+  const freshness = scanAgeMs < lidarState.staleAfterMs ? 1 : 0.42;
+
+  for (const [angleDeg, distanceMm] of lidarState.points) {
+    const angleRad = ((angleDeg - 90) * Math.PI) / 180;
+    const distanceRatio = Math.min(1, distanceMm / maxDistance);
+    const pointRadius = distanceRatio * radius;
+    const x = centerX + Math.cos(angleRad) * pointRadius;
+    const y = centerY + Math.sin(angleRad) * pointRadius;
+
+    const nearFactor = 1 - distanceRatio;
+    const alpha = (0.24 + nearFactor * 0.72) * freshness;
+    const pointSize = 1.5 + nearFactor * 2.3;
+    ctx.fillStyle = `rgba(122, 255, 187, ${Math.min(0.95, alpha).toFixed(3)})`;
+    ctx.fillRect(x - pointSize / 2, y - pointSize / 2, pointSize, pointSize);
+  }
+
+  ctx.fillStyle = "rgba(225, 255, 240, 0.92)";
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, 3.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (lidarState.staleStatusEnabled && scanAgeMs >= lidarState.staleAfterMs) {
+    setLidarStatus("WAITING FOR SCAN", "warn");
+  }
+
+  window.requestAnimationFrame(drawLidarFrame);
+}
+
 function connectBackendSocket() {
   if (backend.ws && (backend.ws.readyState === WebSocket.OPEN || backend.ws.readyState === WebSocket.CONNECTING)) {
     return;
@@ -62,13 +273,28 @@ function connectBackendSocket() {
 
   ws.addEventListener("open", () => {
     console.info("Connected to backend control socket.");
+    lidarState.staleStatusEnabled = true;
+    if (!lidarState.lastScanAtMs) {
+      setLidarStatus("CONNECTED", "warn");
+    }
   });
 
   ws.addEventListener("close", () => {
     if (backend.ws !== ws) return;
     backend.ws = null;
+    lidarState.staleStatusEnabled = false;
+    setLidarStatus("BACKEND OFFLINE", "warn");
     window.clearTimeout(backend.reconnectTimer);
     backend.reconnectTimer = window.setTimeout(connectBackendSocket, 1500);
+  });
+
+  ws.addEventListener("message", (event) => {
+    try {
+      const message = JSON.parse(String(event.data || "{}"));
+      handleBackendMessage(message);
+    } catch {
+      // Ignore invalid backend payloads.
+    }
   });
 
   ws.addEventListener("error", () => {
@@ -284,6 +510,7 @@ function setupEvents() {
     if (event.key !== "Escape") return;
     setSettingsOpen(false);
   });
+  window.addEventListener("resize", syncLidarCanvasSize);
   window.addEventListener("blur", () => {
     controlButtons.forEach((button, key) => setPressed(key, false));
     stopAllDrive();
@@ -298,6 +525,11 @@ setupEvents();
 setSettingsOpen(false);
 setFullCameraView(false);
 setSecondaryCollapsed(false);
+setLidarStatus("CONNECTING", "warn");
+syncLidarCanvasSize();
+if (lidarState.ctx) {
+  window.requestAnimationFrame(drawLidarFrame);
+}
 connectBackendSocket();
 
 if (navigator.mediaDevices?.getUserMedia) {

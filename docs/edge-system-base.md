@@ -21,8 +21,9 @@
 ### 2) Camera + sensor reporting
 
 1. Pi probes camera status for both camera indexes.
-2. Pi sends `camera.status` event to backend.
-3. Backend forwards to UI subscribers.
+2. Pi streams LiDAR scans as `lidar.scan`.
+3. Pi sends `camera.status` event to backend.
+4. Backend forwards to UI subscribers.
 
 ## Message Envelope (Backend Event)
 

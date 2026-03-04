@@ -11,9 +11,13 @@
     <video id="camera-feed" class="camera-feed" autoplay playsinline muted></video>
     <div class="overlay">
       <div class="lidar-side">
-        <div class="lidar-map" aria-label="LiDAR map placeholder">
+        <div class="lidar-map" aria-label="Live LiDAR map">
+          <canvas id="lidar-canvas" class="lidar-canvas" width="420" height="420"></canvas>
           <div class="lidar-grid"></div>
-          <span class="lidar-label">LiDAR</span>
+          <div class="lidar-head">
+            <span class="lidar-label">LiDAR</span>
+            <span id="lidar-status" class="lidar-status">CONNECTING</span>
+          </div>
         </div>
 
         <div id="secondary-feed-shell" class="secondary-feed-shell" aria-label="Secondary camera feed">

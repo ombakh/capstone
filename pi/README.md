@@ -8,6 +8,7 @@ Responsibilities:
 - Forward drive/motor commands from backend to ESP32 over serial.
 - Publish ESP32 telemetry to backend as Pi events.
 - Publish status for two attached cameras.
+- Stream live LiDAR scans (`lidar.scan`) to backend for web rendering.
 
 ## Install
 
@@ -61,6 +62,12 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `CAMERA_RIGHT_INDEX` default: `1`
 - `PI_HEARTBEAT_SEC` default: `5`
 - `CAMERA_PUBLISH_SEC` default: `2`
+- `LIDAR_ENABLED` default: `1` (set `0` to disable streaming)
+- `LIDAR_SERIAL_PORT` default: `/dev/ttyUSB1`
+- `LIDAR_MAX_DISTANCE_MM` default: `6000`
+- `LIDAR_MIN_DISTANCE_MM` default: `120`
+- `LIDAR_MAX_POINTS` default: `300`
+- `LIDAR_PUBLISH_HZ` default: `10`
 - `PI_RECONNECT_MAX_SEC` default: `20`
 
 ## Command Flow
