@@ -5,6 +5,7 @@ Raspberry Pi gateway base:
 - Forwards UI drive commands to ESP32 over serial
 - Publishes ESP32 telemetry to backend
 - Publishes dual-camera status to backend
+- Streams LiDAR scans to backend for web visualization
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,9 +34,21 @@ try:
 except ImportError:  # pragma: no cover
     cv2 = None
 
+try:
+    from rplidar import RPLidar  # type: ignore
+except ImportError:  # pragma: no cover
+    RPLidar = None
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 @dataclass(frozen=True)
@@ -48,6 +62,12 @@ class Config:
     camera_right_index: int
     heartbeat_interval_sec: float
     camera_publish_interval_sec: float
+    lidar_enabled: bool
+    lidar_port: str
+    lidar_max_distance_mm: int
+    lidar_min_distance_mm: int
+    lidar_max_points: int
+    lidar_publish_hz: float
     reconnect_max_sec: float
 
     @property
@@ -70,6 +90,12 @@ class Config:
             camera_right_index=int(os.getenv("CAMERA_RIGHT_INDEX", "1")),
             heartbeat_interval_sec=float(os.getenv("PI_HEARTBEAT_SEC", "5")),
             camera_publish_interval_sec=float(os.getenv("CAMERA_PUBLISH_SEC", "2")),
+            lidar_enabled=env_flag("LIDAR_ENABLED", default=True),
+            lidar_port=os.getenv("LIDAR_SERIAL_PORT", "/dev/ttyUSB1"),
+            lidar_max_distance_mm=int(os.getenv("LIDAR_MAX_DISTANCE_MM", "6000")),
+            lidar_min_distance_mm=int(os.getenv("LIDAR_MIN_DISTANCE_MM", "120")),
+            lidar_max_points=int(os.getenv("LIDAR_MAX_POINTS", "300")),
+            lidar_publish_hz=float(os.getenv("LIDAR_PUBLISH_HZ", "10")),
             reconnect_max_sec=float(os.getenv("PI_RECONNECT_MAX_SEC", "20")),
         )
 
@@ -223,14 +249,197 @@ class CameraMonitor:
         self._captures.clear()
 
 
+class LidarBridge:
+    def __init__(
+        self,
+        enabled: bool,
+        port: str,
+        max_distance_mm: int,
+        min_distance_mm: int,
+        max_points: int,
+    ) -> None:
+        self.enabled = enabled
+        self.port = port
+        self.max_distance_mm = max(100, max_distance_mm)
+        self.min_distance_mm = max(0, min_distance_mm)
+        self.max_points = max(50, max_points)
+        self.driver_available = RPLidar is not None
+
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._lidar: Optional[Any] = None
+
+        self._lock = threading.Lock()
+        self._latest_scan: Optional[Dict[str, Any]] = None
+        self._sequence = 0
+        self._connected = False
+        self._last_scan_at: Optional[str] = None
+        self._last_error = ""
+
+    def start(self) -> None:
+        if not self.enabled:
+            logging.info("LiDAR stream disabled via env (LIDAR_ENABLED=0).")
+            return
+
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="lidar-stream", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._shutdown_lidar()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def consume_latest(self, last_sequence: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            if not self._latest_scan:
+                return None
+            sequence = int(self._latest_scan.get("sequence", 0))
+            if sequence <= last_sequence:
+                return None
+
+            return {
+                "sequence": sequence,
+                "timestamp": str(self._latest_scan.get("timestamp", now_iso())),
+                "points": [list(point) for point in self._latest_scan.get("points", [])],
+                "pointCount": int(self._latest_scan.get("pointCount", 0)),
+                "sourcePointCount": int(self._latest_scan.get("sourcePointCount", 0)),
+                "maxDistanceMm": self.max_distance_mm,
+                "minDistanceMm": self.min_distance_mm,
+            }
+
+    def status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "driverAvailable": self.driver_available,
+                "connected": self._connected,
+                "port": self.port,
+                "lastScanAt": self._last_scan_at,
+                "lastError": self._last_error,
+                "maxDistanceMm": self.max_distance_mm,
+                "minDistanceMm": self.min_distance_mm,
+                "maxPoints": self.max_points,
+            }
+
+    def _set_connected(self, connected: bool) -> None:
+        with self._lock:
+            self._connected = connected
+
+    def _set_error(self, error: str) -> None:
+        with self._lock:
+            self._last_error = error
+
+    def _store_scan(self, payload: Dict[str, Any]) -> None:
+        with self._lock:
+            self._sequence += 1
+            timestamp = now_iso()
+            self._last_scan_at = timestamp
+            self._latest_scan = {
+                **payload,
+                "sequence": self._sequence,
+                "timestamp": timestamp,
+            }
+
+    def _normalize_scan(self, scan: Any) -> Optional[Dict[str, Any]]:
+        points = []
+        for point in scan:
+            if not isinstance(point, (tuple, list)) or len(point) < 3:
+                continue
+
+            try:
+                angle = float(point[1]) % 360.0
+                distance = float(point[2])
+            except (TypeError, ValueError):
+                continue
+
+            if distance < self.min_distance_mm or distance > self.max_distance_mm:
+                continue
+
+            points.append((angle, int(distance)))
+
+        if not points:
+            return None
+
+        points.sort(key=lambda item: item[0])
+        source_point_count = len(points)
+        if source_point_count > self.max_points:
+            step = source_point_count / float(self.max_points)
+            points = [points[int(index * step)] for index in range(self.max_points)]
+
+        return {
+            "points": [[round(angle, 2), distance] for angle, distance in points],
+            "pointCount": len(points),
+            "sourcePointCount": source_point_count,
+        }
+
+    def _shutdown_lidar(self) -> None:
+        lidar = self._lidar
+        self._lidar = None
+        if lidar is None:
+            return
+
+        for method_name in ("stop", "stop_motor", "disconnect"):
+            try:
+                method = getattr(lidar, method_name, None)
+                if callable(method):
+                    method()
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        if RPLidar is None:
+            self._set_error("python package 'rplidar' is not installed")
+            logging.warning(
+                "LiDAR stream unavailable: install 'rplidar-roboticia' in the Pi environment."
+            )
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                lidar = RPLidar(self.port, timeout=1)
+                self._lidar = lidar
+                lidar.start_motor()
+                self._set_connected(True)
+                self._set_error("")
+                logging.info("LiDAR connected on %s", self.port)
+
+                for scan in lidar.iter_scans(max_buf_meas=1200):
+                    if self._stop_event.is_set():
+                        break
+                    payload = self._normalize_scan(scan)
+                    if payload:
+                        self._store_scan(payload)
+            except Exception as exc:
+                self._set_error(str(exc))
+                logging.warning("LiDAR stream error on %s: %s", self.port, exc)
+                time.sleep(1.0)
+            finally:
+                self._set_connected(False)
+                self._shutdown_lidar()
+
+
 class PiGateway:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.esp = EspSerialBridge(config.esp_serial_port, config.esp_baud)
         self.cameras = CameraMonitor(config.camera_left_index, config.camera_right_index)
+        self.lidar = LidarBridge(
+            enabled=config.lidar_enabled,
+            port=config.lidar_port,
+            max_distance_mm=config.lidar_max_distance_mm,
+            min_distance_mm=config.lidar_min_distance_mm,
+            max_points=config.lidar_max_points,
+        )
         self._last_esp_connected: Optional[bool] = None
+        self._last_lidar_connected: Optional[bool] = None
 
     async def run_forever(self) -> None:
+        self.lidar.start()
         backoff = 1.0
         while True:
             try:
@@ -251,6 +460,7 @@ class PiGateway:
                     "deviceId": self.config.device_id,
                     "espSerialPort": self.config.esp_serial_port,
                     "cameraIndexes": [self.config.camera_left_index, self.config.camera_right_index],
+                    "lidar": self.lidar.status(),
                 },
             )
 
@@ -259,6 +469,7 @@ class PiGateway:
                 asyncio.create_task(self._heartbeat_loop(ws), name="heartbeat_loop"),
                 asyncio.create_task(self._esp_loop(ws), name="esp_loop"),
                 asyncio.create_task(self._camera_loop(ws), name="camera_loop"),
+                asyncio.create_task(self._lidar_loop(ws), name="lidar_loop"),
             ]
 
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
@@ -343,6 +554,16 @@ class PiGateway:
             await self._send_ack(ws, command_id=command_id, status="camera_status_sent")
             return
 
+        if command_name == "lidar_status":
+            await self._send_event(
+                ws,
+                event_type="lidar.status",
+                payload=self.lidar.status(),
+                metadata={"source": "command"},
+            )
+            await self._send_ack(ws, command_id=command_id, status="lidar_status_sent")
+            return
+
         await self._send_ack(
             ws,
             command_id=command_id,
@@ -385,6 +606,16 @@ class PiGateway:
                     },
                 )
 
+            lidar_status = self.lidar.status()
+            lidar_connected = bool(lidar_status.get("connected"))
+            if self._last_lidar_connected is None or self._last_lidar_connected != lidar_connected:
+                self._last_lidar_connected = lidar_connected
+                await self._send_event(
+                    ws,
+                    event_type="lidar.status",
+                    payload=lidar_status,
+                )
+
     async def _esp_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
             await asyncio.sleep(0.05)
@@ -404,9 +635,25 @@ class PiGateway:
                 payload=self.cameras.snapshot(),
             )
 
+    async def _lidar_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+        if not self.config.lidar_enabled:
+            return
+
+        interval_sec = max(0.05, 1.0 / max(1.0, self.config.lidar_publish_hz))
+        last_sequence = 0
+        while True:
+            await asyncio.sleep(interval_sec)
+            scan = self.lidar.consume_latest(last_sequence)
+            if not scan:
+                continue
+
+            last_sequence = int(scan.get("sequence", last_sequence))
+            await self._send_event(ws, event_type="lidar.scan", payload=scan)
+
     def close(self) -> None:
         self.esp.close()
         self.cameras.close()
+        self.lidar.stop()
 
 
 async def async_main() -> None:
