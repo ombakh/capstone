@@ -8,6 +8,14 @@ import { WebSocketServer } from "ws";
 
 dotenv.config();
 
+const HTTP_ACCEPTED = 202;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const WS_OPEN = 1;
+const WS_POLICY_VIOLATION = 1008;
+const WS_SERVICE_RESTART = 1012;
+const DRIVE_DIRECTIONS = new Set(["forward", "reverse", "left", "right", "stop"]);
+
 const config = {
   host: process.env.BACKEND_HOST || "0.0.0.0",
   port: Number(process.env.BACKEND_PORT || 3000),
@@ -16,9 +24,6 @@ const config = {
   eventHistoryLimit: Number(process.env.EVENT_HISTORY_LIMIT || 300),
   commandQueueLimit: Number(process.env.COMMAND_QUEUE_LIMIT || 100)
 };
-
-const WS_OPEN = 1;
-const DRIVE_DIRECTIONS = new Set(["forward", "reverse", "left", "right", "stop"]);
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -41,49 +46,71 @@ const state = {
 const uiClients = new Set();
 const piClients = new Map();
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function isObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function ensureObject(value, name) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isObject(value)) {
     throw new Error(`${name} must be an object`);
   }
 }
 
+function getObjectOrEmpty(value) {
+  return isObject(value) ? value : {};
+}
+
+function isSocketOpen(socket) {
+  return socket?.readyState === WS_OPEN;
+}
+
 function safeJsonSend(socket, payload) {
-  if (socket.readyState !== WS_OPEN) return false;
+  if (!isSocketOpen(socket)) return false;
   socket.send(JSON.stringify(payload));
   return true;
 }
 
+function createDeviceState(deviceId) {
+  return {
+    deviceId,
+    connected: false,
+    connectedVia: null,
+    lastSeenAt: null,
+    lastEventByType: {},
+    lastCommandAt: null,
+    pendingCommandCount: 0
+  };
+}
+
 function getDeviceState(deviceId) {
   if (!state.devices.has(deviceId)) {
-    state.devices.set(deviceId, {
-      deviceId,
-      connected: false,
-      connectedVia: null,
-      lastSeenAt: null,
-      lastEventByType: {},
-      lastCommandAt: null,
-      pendingCommandCount: 0
-    });
+    state.devices.set(deviceId, createDeviceState(deviceId));
   }
   return state.devices.get(deviceId);
 }
 
-function setDeviceOnline(deviceId, connectedVia) {
+function setDeviceConnectivity(deviceId, connected, connectedVia = null) {
   const device = getDeviceState(deviceId);
-  device.connected = true;
-  device.connectedVia = connectedVia;
-  device.lastSeenAt = new Date().toISOString();
+  device.connected = connected;
+  device.connectedVia = connected ? connectedVia : null;
+  device.lastSeenAt = nowIso();
+}
+
+function setDeviceOnline(deviceId, connectedVia) {
+  setDeviceConnectivity(deviceId, true, connectedVia);
 }
 
 function setDeviceOffline(deviceId) {
-  const device = getDeviceState(deviceId);
-  device.connected = false;
-  device.connectedVia = null;
-  device.lastSeenAt = new Date().toISOString();
+  setDeviceConnectivity(deviceId, false);
 }
 
 function normalizePiEvent(input, fallbackDeviceId = "") {
   ensureObject(input, "event");
+
   const deviceId = String(input.deviceId || fallbackDeviceId || "").trim();
   if (!deviceId) {
     throw new Error("event.deviceId is required");
@@ -94,28 +121,22 @@ function normalizePiEvent(input, fallbackDeviceId = "") {
     throw new Error("event.eventType is required");
   }
 
-  const payload =
-    input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)
-      ? input.payload
-      : {};
-  const metadata =
-    input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)
-      ? input.metadata
-      : {};
+  const receivedAt = nowIso();
 
   return {
     id: crypto.randomUUID(),
     deviceId,
     eventType,
-    payload,
-    metadata,
-    timestamp: typeof input.timestamp === "string" ? input.timestamp : new Date().toISOString(),
-    receivedAt: new Date().toISOString()
+    payload: getObjectOrEmpty(input.payload),
+    metadata: getObjectOrEmpty(input.metadata),
+    timestamp: typeof input.timestamp === "string" ? input.timestamp : receivedAt,
+    receivedAt
   };
 }
 
 function normalizeUiCommand(input) {
   ensureObject(input, "command");
+
   const deviceId = String(input.deviceId || "").trim();
   const command = String(input.command || "").trim();
   if (!deviceId) {
@@ -125,22 +146,24 @@ function normalizeUiCommand(input) {
     throw new Error("command.command is required");
   }
 
-  const params =
-    input.params && typeof input.params === "object" && !Array.isArray(input.params)
-      ? input.params
-      : {};
-
   return {
     id: crypto.randomUUID(),
     deviceId,
     command,
-    params,
-    createdAt: new Date().toISOString()
+    params: getObjectOrEmpty(input.params),
+    createdAt: nowIso()
   };
+}
+
+function clampNumber(value, fallback, min, max) {
+  let nextValue = Number(value ?? fallback);
+  if (!Number.isFinite(nextValue)) nextValue = fallback;
+  return Math.min(max, Math.max(min, nextValue));
 }
 
 function normalizeDriveCommand(input) {
   ensureObject(input, "drive");
+
   const deviceId = String(input.deviceId || "").trim();
   const direction = String(input.direction || "").trim().toLowerCase();
 
@@ -151,13 +174,8 @@ function normalizeDriveCommand(input) {
     throw new Error("drive.direction must be one of forward|reverse|left|right|stop");
   }
 
-  let speed = Number(input.speed ?? 0.55);
-  if (!Number.isFinite(speed)) speed = 0.55;
-  speed = Math.min(1, Math.max(0, speed));
-
-  let durationMs = Number(input.durationMs ?? 0);
-  if (!Number.isFinite(durationMs) || durationMs < 0) durationMs = 0;
-  durationMs = Math.floor(durationMs);
+  const speed = clampNumber(input.speed, 0.55, 0, 1);
+  const durationMs = Math.floor(clampNumber(input.durationMs, 0, 0, Number.MAX_SAFE_INTEGER));
 
   return normalizeUiCommand({
     deviceId,
@@ -181,34 +199,49 @@ function recordEvent(event) {
   }
 }
 
+function setPendingCommandCount(deviceId, pendingCommandCount, lastCommandAt = null) {
+  const device = getDeviceState(deviceId);
+  device.pendingCommandCount = pendingCommandCount;
+  if (lastCommandAt) {
+    device.lastCommandAt = lastCommandAt;
+  }
+}
+
+function buildPiCommandMessage(command) {
+  return { type: "ui:command", command };
+}
+
 function queueCommand(command) {
   const queue = state.commandQueues.get(command.deviceId) || [];
   queue.push(command);
   if (queue.length > config.commandQueueLimit) {
     queue.shift();
   }
-  state.commandQueues.set(command.deviceId, queue);
 
-  const device = getDeviceState(command.deviceId);
-  device.pendingCommandCount = queue.length;
-  device.lastCommandAt = command.createdAt;
+  state.commandQueues.set(command.deviceId, queue);
+  setPendingCommandCount(command.deviceId, queue.length, command.createdAt);
+}
+
+function broadcastToUi(message) {
+  for (const socket of uiClients) {
+    safeJsonSend(socket, message);
+  }
 }
 
 function flushQueuedCommands(deviceId) {
   const queue = state.commandQueues.get(deviceId);
   const piSocket = piClients.get(deviceId);
-  if (!queue?.length || !piSocket || piSocket.readyState !== WS_OPEN) return 0;
+  if (!queue?.length || !isSocketOpen(piSocket)) return 0;
 
   let flushed = 0;
   while (queue.length > 0) {
     const command = queue.shift();
-    if (!safeJsonSend(piSocket, { type: "ui:command", command })) break;
+    if (!safeJsonSend(piSocket, buildPiCommandMessage(command))) break;
     flushed += 1;
     broadcastToUi({ type: "command:delivered", command });
   }
 
-  const device = getDeviceState(deviceId);
-  device.pendingCommandCount = queue.length;
+  setPendingCommandCount(deviceId, queue.length);
   if (queue.length === 0) {
     state.commandQueues.delete(deviceId);
   }
@@ -218,27 +251,20 @@ function flushQueuedCommands(deviceId) {
 
 function sendCommandToPi(command) {
   const piSocket = piClients.get(command.deviceId);
-  if (!piSocket || piSocket.readyState !== WS_OPEN) return false;
-  return safeJsonSend(piSocket, { type: "ui:command", command });
+  if (!isSocketOpen(piSocket)) return false;
+  return safeJsonSend(piSocket, buildPiCommandMessage(command));
 }
 
 function acceptCommand(command) {
   const delivered = sendCommandToPi(command);
-  if (!delivered) {
-    queueCommand(command);
+  if (delivered) {
+    setPendingCommandCount(command.deviceId, getDeviceState(command.deviceId).pendingCommandCount, command.createdAt);
   } else {
-    const device = getDeviceState(command.deviceId);
-    device.lastCommandAt = command.createdAt;
+    queueCommand(command);
   }
 
   broadcastToUi({ type: "command:accepted", command, delivered });
   return delivered;
-}
-
-function broadcastToUi(message) {
-  for (const socket of uiClients) {
-    safeJsonSend(socket, message);
-  }
 }
 
 function serializableState() {
@@ -255,15 +281,54 @@ function handlePiEvent(event, source) {
   broadcastToUi({ type: "pi:event", source, event });
 }
 
+function getHeaderValue(headers, name) {
+  const value = headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function extractRequestToken(requestUrl, request) {
+  const bearerValue = getHeaderValue(request.headers, "authorization");
+  const deviceTokenHeader = getHeaderValue(request.headers, "x-device-token");
+
+  return (
+    requestUrl.searchParams.get("token") ||
+    deviceTokenHeader ||
+    bearerValue?.replace("Bearer ", "") ||
+    ""
+  );
+}
+
+function parseJsonMessage(rawData) {
+  try {
+    return JSON.parse(rawData.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function respondAccepted(res, payload) {
+  res.status(HTTP_ACCEPTED).json({ ok: true, ...payload });
+}
+
+function respondBadRequest(res, error) {
+  res.status(HTTP_BAD_REQUEST).json({
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
+
+function closeSocket(socket, code, reason) {
+  socket.close(code, reason);
+}
+
 function requirePiAuth(req, res, next) {
   if (!config.piDeviceToken) {
     next();
     return;
   }
 
-  const token = req.headers["x-device-token"];
+  const token = getHeaderValue(req.headers, "x-device-token");
   if (token !== config.piDeviceToken) {
-    res.status(401).json({ error: "invalid device token" });
+    res.status(HTTP_UNAUTHORIZED).json({ error: "invalid device token" });
     return;
   }
 
@@ -287,9 +352,9 @@ app.post("/api/pi/event", requirePiAuth, (req, res) => {
   try {
     const event = normalizePiEvent(req.body);
     handlePiEvent(event, "http");
-    res.status(202).json({ ok: true, eventId: event.id });
+    respondAccepted(res, { eventId: event.id });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    respondBadRequest(res, error);
   }
 });
 
@@ -297,14 +362,13 @@ app.post("/api/ui/command", (req, res) => {
   try {
     const command = normalizeUiCommand(req.body);
     const delivered = acceptCommand(command);
-    res.status(202).json({
-      ok: true,
+    respondAccepted(res, {
       delivered,
       queued: !delivered,
       commandId: command.id
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    respondBadRequest(res, error);
   }
 });
 
@@ -312,134 +376,148 @@ app.post("/api/ui/drive", (req, res) => {
   try {
     const command = normalizeDriveCommand(req.body);
     const delivered = acceptCommand(command);
-    res.status(202).json({
-      ok: true,
+    respondAccepted(res, {
       delivered,
       queued: !delivered,
       commandId: command.id,
       command
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    respondBadRequest(res, error);
   }
 });
+
+function sendSnapshot(socket) {
+  safeJsonSend(socket, {
+    type: "snapshot",
+    state: serializableState()
+  });
+}
+
+function registerPiSocket(socket, deviceId) {
+  const existing = piClients.get(deviceId);
+  if (isSocketOpen(existing)) {
+    closeSocket(existing, WS_SERVICE_RESTART, "replaced by a new connection");
+  }
+
+  piClients.set(deviceId, socket);
+  setDeviceOnline(deviceId, "ws");
+  safeJsonSend(socket, {
+    type: "ws:ready",
+    role: "pi",
+    deviceId,
+    serverTime: nowIso()
+  });
+  broadcastToUi({
+    type: "pi:status",
+    deviceId,
+    status: "online",
+    at: nowIso()
+  });
+  flushQueuedCommands(deviceId);
+}
+
+function handleUiSocketMessage(message) {
+  if (!isObject(message) || message.type !== "ui:command") return;
+
+  try {
+    const command = normalizeUiCommand(message.command || {});
+    acceptCommand(command);
+  } catch {
+    // Invalid command payload is ignored on WS path.
+  }
+}
+
+function handlePiSocketMessage(deviceId, message) {
+  if (!isObject(message)) return;
+
+  if (message.type === "pi:event") {
+    try {
+      const event = normalizePiEvent(message.event || {}, deviceId);
+      handlePiEvent(event, "ws");
+    } catch {
+      // Invalid event payload is ignored on WS path.
+    }
+    return;
+  }
+
+  if (message.type === "pi:ack") {
+    broadcastToUi({
+      type: "pi:ack",
+      deviceId,
+      ack: isObject(message.ack) ? message.ack : {},
+      at: nowIso()
+    });
+    return;
+  }
+
+  if (message.type === "pi:heartbeat") {
+    getDeviceState(deviceId).lastSeenAt = nowIso();
+  }
+}
+
+function handleSocketClose(role, socket, deviceId) {
+  if (role === "ui") {
+    uiClients.delete(socket);
+    return;
+  }
+
+  if (role === "pi" && piClients.get(deviceId) === socket) {
+    piClients.delete(deviceId);
+    setDeviceOffline(deviceId);
+    broadcastToUi({
+      type: "pi:status",
+      deviceId,
+      status: "offline",
+      at: nowIso()
+    });
+  }
+}
 
 const server = http.createServer(app);
 const wsServer = new WebSocketServer({ server, path: "/ws" });
 
 wsServer.on("connection", (socket, request) => {
-  const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+  const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
   const role = requestUrl.searchParams.get("role");
   const deviceId = requestUrl.searchParams.get("deviceId") || "";
-  const token =
-    requestUrl.searchParams.get("token") ||
-    request.headers["x-device-token"] ||
-    request.headers.authorization?.replace("Bearer ", "");
+  const token = extractRequestToken(requestUrl, request);
 
   if (role === "ui") {
     uiClients.add(socket);
-    safeJsonSend(socket, {
-      type: "snapshot",
-      state: serializableState()
-    });
+    sendSnapshot(socket);
   } else if (role === "pi") {
     if (!deviceId) {
-      socket.close(1008, "deviceId is required");
+      closeSocket(socket, WS_POLICY_VIOLATION, "deviceId is required");
       return;
     }
     if (config.piDeviceToken && token !== config.piDeviceToken) {
-      socket.close(1008, "invalid device token");
+      closeSocket(socket, WS_POLICY_VIOLATION, "invalid device token");
       return;
     }
 
-    const existing = piClients.get(deviceId);
-    if (existing && existing.readyState === WS_OPEN) {
-      existing.close(1012, "replaced by a new connection");
-    }
-
-    piClients.set(deviceId, socket);
-    setDeviceOnline(deviceId, "ws");
-    safeJsonSend(socket, {
-      type: "ws:ready",
-      role: "pi",
-      deviceId,
-      serverTime: new Date().toISOString()
-    });
-    broadcastToUi({
-      type: "pi:status",
-      deviceId,
-      status: "online",
-      at: new Date().toISOString()
-    });
-    flushQueuedCommands(deviceId);
+    registerPiSocket(socket, deviceId);
   } else {
-    socket.close(1008, "role must be ui or pi");
+    closeSocket(socket, WS_POLICY_VIOLATION, "role must be ui or pi");
     return;
   }
 
   socket.on("message", (rawData) => {
-    let message;
-    try {
-      message = JSON.parse(rawData.toString("utf8"));
-    } catch {
-      return;
-    }
+    const message = parseJsonMessage(rawData);
+    if (!message) return;
 
     if (role === "ui") {
-      if (message.type !== "ui:command") return;
-      try {
-        const command = normalizeUiCommand(message.command || {});
-        acceptCommand(command);
-      } catch {
-        // Invalid command payload is ignored on WS path.
-      }
+      handleUiSocketMessage(message);
       return;
     }
 
     if (role === "pi") {
-      if (message.type === "pi:event") {
-        try {
-          const event = normalizePiEvent(message.event || {}, deviceId);
-          handlePiEvent(event, "ws");
-        } catch {
-          // Invalid event payload is ignored on WS path.
-        }
-        return;
-      }
-
-      if (message.type === "pi:ack") {
-        broadcastToUi({
-          type: "pi:ack",
-          deviceId,
-          ack: message.ack || {},
-          at: new Date().toISOString()
-        });
-        return;
-      }
-
-      if (message.type === "pi:heartbeat") {
-        const device = getDeviceState(deviceId);
-        device.lastSeenAt = new Date().toISOString();
-      }
+      handlePiSocketMessage(deviceId, message);
     }
   });
 
   socket.on("close", () => {
-    if (role === "ui") {
-      uiClients.delete(socket);
-      return;
-    }
-
-    if (role === "pi" && piClients.get(deviceId) === socket) {
-      piClients.delete(deviceId);
-      setDeviceOffline(deviceId);
-      broadcastToUi({
-        type: "pi:status",
-        deviceId,
-        status: "offline",
-        at: new Date().toISOString()
-      });
-    }
+    handleSocketClose(role, socket, deviceId);
   });
 });
 

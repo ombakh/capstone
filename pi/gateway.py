@@ -40,6 +40,9 @@ except ImportError:  # pragma: no cover
     RPLidar = None
 
 
+JsonDict = Dict[str, Any]
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -49,6 +52,23 @@ def env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def env_int(name: str, default: int) -> int:
+    return int(os.getenv(name, str(default)))
+
+
+def env_float(name: str, default: float) -> float:
+    return float(os.getenv(name, str(default)))
+
+
+def close_quietly(resource: Any, method_name: str) -> None:
+    method = getattr(resource, method_name, None)
+    if callable(method):
+        try:
+            method()
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True)
@@ -85,18 +105,18 @@ class Config:
             device_id=os.getenv("PI_DEVICE_ID", "pi-01"),
             device_token=os.getenv("PI_DEVICE_TOKEN", ""),
             esp_serial_port=os.getenv("ESP_SERIAL_PORT", "/dev/ttyUSB0"),
-            esp_baud=int(os.getenv("ESP_BAUD", "115200")),
-            camera_left_index=int(os.getenv("CAMERA_LEFT_INDEX", "0")),
-            camera_right_index=int(os.getenv("CAMERA_RIGHT_INDEX", "1")),
-            heartbeat_interval_sec=float(os.getenv("PI_HEARTBEAT_SEC", "5")),
-            camera_publish_interval_sec=float(os.getenv("CAMERA_PUBLISH_SEC", "2")),
+            esp_baud=env_int("ESP_BAUD", 115200),
+            camera_left_index=env_int("CAMERA_LEFT_INDEX", 0),
+            camera_right_index=env_int("CAMERA_RIGHT_INDEX", 1),
+            heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
+            camera_publish_interval_sec=env_float("CAMERA_PUBLISH_SEC", 2.0),
             lidar_enabled=env_flag("LIDAR_ENABLED", default=True),
             lidar_port=os.getenv("LIDAR_SERIAL_PORT", "/dev/ttyUSB1"),
-            lidar_max_distance_mm=int(os.getenv("LIDAR_MAX_DISTANCE_MM", "6000")),
-            lidar_min_distance_mm=int(os.getenv("LIDAR_MIN_DISTANCE_MM", "120")),
-            lidar_max_points=int(os.getenv("LIDAR_MAX_POINTS", "300")),
-            lidar_publish_hz=float(os.getenv("LIDAR_PUBLISH_HZ", "10")),
-            reconnect_max_sec=float(os.getenv("PI_RECONNECT_MAX_SEC", "20")),
+            lidar_max_distance_mm=env_int("LIDAR_MAX_DISTANCE_MM", 6000),
+            lidar_min_distance_mm=env_int("LIDAR_MIN_DISTANCE_MM", 120),
+            lidar_max_points=env_int("LIDAR_MAX_POINTS", 300),
+            lidar_publish_hz=env_float("LIDAR_PUBLISH_HZ", 10.0),
+            reconnect_max_sec=env_float("PI_RECONNECT_MAX_SEC", 20.0),
         )
 
 
@@ -108,20 +128,27 @@ class EspSerialBridge:
         self._last_connect_attempt = 0.0
 
     def _can_attempt_connect(self) -> bool:
-        # Backoff connection attempts to avoid tight loops if cable is missing.
         now = time.monotonic()
         if now - self._last_connect_attempt < 2.0:
             return False
         self._last_connect_attempt = now
         return True
 
+    def _close_serial(self) -> None:
+        if self._serial is None:
+            return
+        close_quietly(self._serial, "close")
+        self._serial = None
+
+    def _handle_serial_error(self, message: str, exc: Exception) -> None:
+        logging.warning("%s: %s", message, exc)
+        self._close_serial()
+
     def connect(self) -> bool:
         if serial is None:
             return False
-
         if self._serial and self._serial.is_open:
             return True
-
         if not self._can_attempt_connect():
             return False
 
@@ -137,7 +164,7 @@ class EspSerialBridge:
     def connected(self) -> bool:
         return bool(self._serial and self._serial.is_open)
 
-    def read_json(self) -> Optional[Dict[str, Any]]:
+    def read_json(self) -> Optional[JsonDict]:
         if not self.connect() or not self._serial:
             return None
 
@@ -147,22 +174,20 @@ class EspSerialBridge:
             line = self._serial.readline().decode("utf-8", errors="ignore").strip()
             if not line:
                 return None
-            parsed = json.loads(line)
-            if isinstance(parsed, dict):
-                return parsed
-            return {"type": "raw", "value": parsed}
-        except json.JSONDecodeError:
-            return {"type": "raw", "value": line}
         except Exception as exc:
-            logging.warning("ESP read error: %s", exc)
-            try:
-                self._serial.close()
-            except Exception:
-                pass
-            self._serial = None
+            self._handle_serial_error("ESP read error", exc)
             return None
 
-    def send_command(self, command: Dict[str, Any]) -> bool:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            return {"type": "raw", "value": line}
+
+        if isinstance(parsed, dict):
+            return parsed
+        return {"type": "raw", "value": parsed}
+
+    def send_command(self, command: JsonDict) -> bool:
         if not self.connect() or not self._serial:
             return False
 
@@ -171,22 +196,11 @@ class EspSerialBridge:
             self._serial.write(payload.encode("utf-8"))
             return True
         except Exception as exc:
-            logging.warning("ESP write error: %s", exc)
-            try:
-                self._serial.close()
-            except Exception:
-                pass
-            self._serial = None
+            self._handle_serial_error("ESP write error", exc)
             return False
 
     def close(self) -> None:
-        if not self._serial:
-            return
-        try:
-            self._serial.close()
-        except Exception:
-            pass
-        self._serial = None
+        self._close_serial()
 
 
 class CameraMonitor:
@@ -194,6 +208,14 @@ class CameraMonitor:
         self.left_index = left_index
         self.right_index = right_index
         self._captures: Dict[int, Any] = {}
+
+    def _unavailable_status(self, index: int, label: str, reason: str) -> JsonDict:
+        return {
+            "name": label,
+            "index": index,
+            "available": False,
+            "reason": reason,
+        }
 
     def _open_capture(self, index: int) -> Optional[Any]:
         if cv2 is None:
@@ -207,23 +229,13 @@ class CameraMonitor:
         self._captures[index] = capture
         return capture
 
-    def _camera_status(self, index: int, label: str) -> Dict[str, Any]:
+    def _camera_status(self, index: int, label: str) -> JsonDict:
         if cv2 is None:
-            return {
-                "name": label,
-                "index": index,
-                "available": False,
-                "reason": "opencv-not-installed",
-            }
+            return self._unavailable_status(index, label, "opencv-not-installed")
 
         capture = self._open_capture(index)
         if capture is None or not capture.isOpened():
-            return {
-                "name": label,
-                "index": index,
-                "available": False,
-                "reason": "not-opened",
-            }
+            return self._unavailable_status(index, label, "not-opened")
 
         return {
             "name": label,
@@ -234,7 +246,7 @@ class CameraMonitor:
             "fps": float(capture.get(cv2.CAP_PROP_FPS) or 0.0),
         }
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self) -> JsonDict:
         return {
             "left": self._camera_status(self.left_index, "left"),
             "right": self._camera_status(self.right_index, "right"),
@@ -242,10 +254,7 @@ class CameraMonitor:
 
     def close(self) -> None:
         for capture in self._captures.values():
-            try:
-                capture.release()
-            except Exception:
-                pass
+            close_quietly(capture, "release")
         self._captures.clear()
 
 
@@ -270,7 +279,7 @@ class LidarBridge:
         self._lidar: Optional[Any] = None
 
         self._lock = threading.Lock()
-        self._latest_scan: Optional[Dict[str, Any]] = None
+        self._latest_scan: Optional[JsonDict] = None
         self._sequence = 0
         self._connected = False
         self._last_scan_at: Optional[str] = None
@@ -280,7 +289,6 @@ class LidarBridge:
         if not self.enabled:
             logging.info("LiDAR stream disabled via env (LIDAR_ENABLED=0).")
             return
-
         if self._thread and self._thread.is_alive():
             return
 
@@ -294,10 +302,11 @@ class LidarBridge:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
 
-    def consume_latest(self, last_sequence: int) -> Optional[Dict[str, Any]]:
+    def consume_latest(self, last_sequence: int) -> Optional[JsonDict]:
         with self._lock:
             if not self._latest_scan:
                 return None
+
             sequence = int(self._latest_scan.get("sequence", 0))
             if sequence <= last_sequence:
                 return None
@@ -312,7 +321,7 @@ class LidarBridge:
                 "minDistanceMm": self.min_distance_mm,
             }
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> JsonDict:
         with self._lock:
             return {
                 "enabled": self.enabled,
@@ -334,7 +343,7 @@ class LidarBridge:
         with self._lock:
             self._last_error = error
 
-    def _store_scan(self, payload: Dict[str, Any]) -> None:
+    def _store_scan(self, payload: JsonDict) -> None:
         with self._lock:
             self._sequence += 1
             timestamp = now_iso()
@@ -345,7 +354,7 @@ class LidarBridge:
                 "timestamp": timestamp,
             }
 
-    def _normalize_scan(self, scan: Any) -> Optional[Dict[str, Any]]:
+    def _normalize_scan(self, scan: Any) -> Optional[JsonDict]:
         points = []
         for point in scan:
             if not isinstance(point, (tuple, list)) or len(point) < 3:
@@ -384,12 +393,7 @@ class LidarBridge:
             return
 
         for method_name in ("stop", "stop_motor", "disconnect"):
-            try:
-                method = getattr(lidar, method_name, None)
-                if callable(method):
-                    method()
-            except Exception:
-                pass
+            close_quietly(lidar, method_name)
 
     def _run(self) -> None:
         if RPLidar is None:
@@ -411,6 +415,7 @@ class LidarBridge:
                 for scan in lidar.iter_scans(max_buf_meas=1200):
                     if self._stop_event.is_set():
                         break
+
                     payload = self._normalize_scan(scan)
                     if payload:
                         self._store_scan(payload)
@@ -482,44 +487,55 @@ class PiGateway:
                 if exc:
                     raise exc
 
+    async def _send_json(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        payload: JsonDict,
+    ) -> None:
+        await ws.send(json.dumps(payload, separators=(",", ":")))
+
     async def _send_event(
         self,
         ws: websockets.WebSocketClientProtocol,
         event_type: str,
-        payload: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None,
+        payload: JsonDict,
+        metadata: Optional[JsonDict] = None,
     ) -> None:
-        message = {
-            "type": "pi:event",
-            "event": {
-                "deviceId": self.config.device_id,
-                "eventType": event_type,
-                "timestamp": now_iso(),
-                "payload": payload,
-                "metadata": metadata or {},
+        await self._send_json(
+            ws,
+            {
+                "type": "pi:event",
+                "event": {
+                    "deviceId": self.config.device_id,
+                    "eventType": event_type,
+                    "timestamp": now_iso(),
+                    "payload": payload,
+                    "metadata": metadata or {},
+                },
             },
-        }
-        await ws.send(json.dumps(message, separators=(",", ":")))
+        )
 
     async def _send_ack(
         self,
         ws: websockets.WebSocketClientProtocol,
         command_id: str,
         status: str,
-        details: Optional[Dict[str, Any]] = None,
+        details: Optional[JsonDict] = None,
     ) -> None:
-        message = {
-            "type": "pi:ack",
-            "ack": {
-                "commandId": command_id,
-                "status": status,
-                "details": details or {},
-                "timestamp": now_iso(),
+        await self._send_json(
+            ws,
+            {
+                "type": "pi:ack",
+                "ack": {
+                    "commandId": command_id,
+                    "status": status,
+                    "details": details or {},
+                    "timestamp": now_iso(),
+                },
             },
-        }
-        await ws.send(json.dumps(message, separators=(",", ":")))
+        )
 
-    async def _handle_command(self, ws: websockets.WebSocketClientProtocol, command: Dict[str, Any]) -> None:
+    async def _handle_command(self, ws: websockets.WebSocketClientProtocol, command: JsonDict) -> None:
         command_id = str(command.get("id", ""))
         command_name = str(command.get("command", "")).strip().lower()
         params = command.get("params")
@@ -571,50 +587,71 @@ class PiGateway:
             details={"command": command_name},
         )
 
+    @staticmethod
+    def _parse_message(raw: Any) -> Optional[JsonDict]:
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(message, dict):
+            return message
+        return None
+
     async def _recv_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
             raw = await ws.recv()
-            try:
-                message = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            if not isinstance(message, dict):
-                continue
-            if message.get("type") != "ui:command":
+            message = self._parse_message(raw)
+            if not message or message.get("type") != "ui:command":
                 continue
 
             command = message.get("command")
-            if not isinstance(command, dict):
-                continue
+            if isinstance(command, dict):
+                await self._handle_command(ws, command)
 
-            await self._handle_command(ws, command)
+    async def _publish_esp_connection_if_changed(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        connected: bool,
+    ) -> None:
+        if self._last_esp_connected is not None and self._last_esp_connected == connected:
+            return
+
+        self._last_esp_connected = connected
+        await self._send_event(
+            ws,
+            event_type="esp.connection",
+            payload={
+                "connected": connected,
+                "serialPort": self.config.esp_serial_port,
+            },
+        )
+
+    async def _publish_lidar_connection_if_changed(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        lidar_status: JsonDict,
+    ) -> None:
+        connected = bool(lidar_status.get("connected"))
+        if self._last_lidar_connected is not None and self._last_lidar_connected == connected:
+            return
+
+        self._last_lidar_connected = connected
+        await self._send_event(
+            ws,
+            event_type="lidar.status",
+            payload=lidar_status,
+        )
 
     async def _heartbeat_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
             await asyncio.sleep(self.config.heartbeat_interval_sec)
             esp_connected = self.esp.connected() or self.esp.connect()
-            await ws.send(json.dumps({"type": "pi:heartbeat"}, separators=(",", ":")))
-            if self._last_esp_connected is None or self._last_esp_connected != esp_connected:
-                self._last_esp_connected = esp_connected
-                await self._send_event(
-                    ws,
-                    event_type="esp.connection",
-                    payload={
-                        "connected": esp_connected,
-                        "serialPort": self.config.esp_serial_port,
-                    },
-                )
+            await self._send_json(ws, {"type": "pi:heartbeat"})
+            await self._publish_esp_connection_if_changed(ws, esp_connected)
 
             lidar_status = self.lidar.status()
-            lidar_connected = bool(lidar_status.get("connected"))
-            if self._last_lidar_connected is None or self._last_lidar_connected != lidar_connected:
-                self._last_lidar_connected = lidar_connected
-                await self._send_event(
-                    ws,
-                    event_type="lidar.status",
-                    payload=lidar_status,
-                )
+            await self._publish_lidar_connection_if_changed(ws, lidar_status)
 
     async def _esp_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
