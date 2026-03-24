@@ -51,6 +51,7 @@ make serve
 - `make backend-start`: run backend without watch mode
 - `make pi-install`: install Pi gateway dependencies
 - `make pi-run`: run Pi gateway
+- `make pi-run-echo`: run Pi gateway in no-hardware echo mode
 - `make help`: list available targets
 
 ## Edge Base

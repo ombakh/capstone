@@ -78,6 +78,8 @@ class Config:
     device_token: str
     esp_serial_port: str
     esp_baud: int
+    motor_echo: bool
+    motor_echo_only: bool
     camera_left_index: int
     camera_right_index: int
     heartbeat_interval_sec: float
@@ -106,6 +108,8 @@ class Config:
             device_token=os.getenv("PI_DEVICE_TOKEN", ""),
             esp_serial_port=os.getenv("ESP_SERIAL_PORT", "/dev/ttyUSB0"),
             esp_baud=env_int("ESP_BAUD", 115200),
+            motor_echo=env_flag("PI_MOTOR_ECHO", default=True),
+            motor_echo_only=env_flag("PI_MOTOR_ECHO_ONLY", default=False),
             camera_left_index=env_int("CAMERA_LEFT_INDEX", 0),
             camera_right_index=env_int("CAMERA_RIGHT_INDEX", 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
@@ -443,6 +447,35 @@ class PiGateway:
         self._last_esp_connected: Optional[bool] = None
         self._last_lidar_connected: Optional[bool] = None
 
+    @staticmethod
+    def _format_command_value(value: Any) -> str:
+        if isinstance(value, float):
+            return f"{value:.2f}"
+        return str(value)
+
+    def _describe_motor_command(self, command_name: str, params: JsonDict) -> str:
+        if command_name == "drive":
+            details = []
+            for key in ("direction", "speed", "durationMs"):
+                if key not in params:
+                    continue
+                details.append(f"{key}={self._format_command_value(params[key])}")
+            return f"drive {' '.join(details)}".strip()
+
+        if command_name == "set_speed":
+            speed = params.get("speed", "unknown")
+            return f"set_speed speed={self._format_command_value(speed)}"
+
+        return command_name
+
+    def _log_motor_command(self, command_id: str, command_name: str, params: JsonDict, mode: str) -> None:
+        logging.info(
+            "Motor command [%s] id=%s %s",
+            mode,
+            command_id or "-",
+            self._describe_motor_command(command_name, params),
+        )
+
     async def run_forever(self) -> None:
         self.lidar.start()
         backoff = 1.0
@@ -464,6 +497,8 @@ class PiGateway:
                 payload={
                     "deviceId": self.config.device_id,
                     "espSerialPort": self.config.esp_serial_port,
+                    "motorEcho": self.config.motor_echo,
+                    "motorEchoOnly": self.config.motor_echo_only,
                     "cameraIndexes": [self.config.camera_left_index, self.config.camera_right_index],
                     "lidar": self.lidar.status(),
                 },
@@ -543,6 +578,19 @@ class PiGateway:
             params = {}
 
         if command_name in {"drive", "stop", "set_speed"}:
+            if self.config.motor_echo or self.config.motor_echo_only:
+                mode = "echo-only" if self.config.motor_echo_only else "echo+serial"
+                self._log_motor_command(command_id, command_name, params, mode)
+
+            if self.config.motor_echo_only:
+                await self._send_ack(
+                    ws,
+                    command_id=command_id,
+                    status="echoed_to_terminal",
+                    details={"command": command_name, "mode": "echo-only"},
+                )
+                return
+
             forwarded = self.esp.send_command(
                 {
                     "type": "command",
@@ -646,7 +694,7 @@ class PiGateway:
     async def _heartbeat_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
             await asyncio.sleep(self.config.heartbeat_interval_sec)
-            esp_connected = self.esp.connected() or self.esp.connect()
+            esp_connected = False if self.config.motor_echo_only else self.esp.connected() or self.esp.connect()
             await self._send_json(ws, {"type": "pi:heartbeat"})
             await self._publish_esp_connection_if_changed(ws, esp_connected)
 
@@ -654,6 +702,9 @@ class PiGateway:
             await self._publish_lidar_connection_if_changed(ws, lidar_status)
 
     async def _esp_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+        if self.config.motor_echo_only:
+            return
+
         while True:
             await asyncio.sleep(0.05)
             esp_message = self.esp.read_json()

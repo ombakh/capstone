@@ -6,7 +6,7 @@ endif
 PORT ?= 8080
 WEB_HOST ?= 127.0.0.1
 
-.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pi-install pi-run pi-keys
+.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pi-install pi-run pi-run-echo pi-keys
 
 help:
 	@echo "Available targets:"
@@ -18,6 +18,7 @@ help:
 	@echo "  make backend-start   - Run backend"
 	@echo "  make pi-install      - Install Raspberry Pi gateway deps"
 	@echo "  make pi-run          - Run Raspberry Pi gateway"
+	@echo "  make pi-run-echo     - Run Pi gateway in no-hardware echo mode"
 	@echo "  make pi-keys         - Run keyboard-to-ESP serial bridge"
 	@echo "  make help   - Show this help message"
 
@@ -53,6 +54,9 @@ pi-install:
 
 pi-run:
 	python3 pi/gateway.py
+
+pi-run-echo:
+	PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
 
 pi-keys:
 	python3 pi/arrow_serial_bridge.py

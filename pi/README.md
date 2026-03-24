@@ -31,6 +31,15 @@ sudo apt-get install -y python3-opencv
 python3 gateway.py
 ```
 
+For no-hardware testing, run the gateway in terminal echo mode:
+
+```bash
+PI_MOTOR_ECHO_ONLY=1 python3 gateway.py
+```
+
+In that mode, incoming `drive` / `stop` commands are printed to the Pi terminal
+instead of being forwarded to an ESP32 serial device.
+
 ## Direct Arrow-Key Control (Pi -> ESP32)
 
 Use this when you want to drive LED behavior directly from the Pi terminal
@@ -58,6 +67,8 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_DEVICE_TOKEN` default: empty
 - `ESP_SERIAL_PORT` default: `/dev/ttyUSB0`
 - `ESP_BAUD` default: `115200`
+- `PI_MOTOR_ECHO` default: `1` (log incoming motor commands to the Pi terminal)
+- `PI_MOTOR_ECHO_ONLY` default: `0` (set `1` to skip ESP serial and only print commands)
 - `CAMERA_LEFT_INDEX` default: `0`
 - `CAMERA_RIGHT_INDEX` default: `1`
 - `PI_HEARTBEAT_SEC` default: `5`
