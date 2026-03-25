@@ -7,6 +7,9 @@ const elements = {
   settingsBtn: document.getElementById("settings-button"),
   settingsMenu: document.getElementById("settings-menu"),
   fullCameraViewToggle: document.getElementById("full-camera-view-toggle"),
+  piStatusPanel: document.getElementById("pi-status-panel"),
+  piConnectionLabel: document.getElementById("pi-connection-label"),
+  piTemperature: document.getElementById("pi-temperature"),
   lidarCanvas: document.getElementById("lidar-canvas"),
   lidarStatus: document.getElementById("lidar-status")
 };
@@ -50,6 +53,11 @@ const driveState = {
   speed: DEFAULT_DRIVE_SPEED
 };
 
+const deviceState = {
+  connected: false,
+  temperatureF: null
+};
+
 const lidarState = {
   ctx: elements.lidarCanvas ? elements.lidarCanvas.getContext("2d") : null,
   points: [],
@@ -87,6 +95,38 @@ function setLidarStatus(text, mode = "warn") {
   elements.lidarStatus.textContent = text;
   elements.lidarStatus.classList.remove("live", "warn");
   elements.lidarStatus.classList.add(mode === "live" ? "live" : "warn");
+}
+
+function formatTemperatureF(value) {
+  if (!Number.isFinite(value)) return "PI TEMP --.- F";
+  return `PI TEMP ${value.toFixed(1)} F`;
+}
+
+function renderDeviceStatus() {
+  if (!elements.piStatusPanel || !elements.piConnectionLabel || !elements.piTemperature) return;
+
+  elements.piStatusPanel.classList.toggle("connected", deviceState.connected);
+  elements.piStatusPanel.classList.toggle("disconnected", !deviceState.connected);
+  elements.piConnectionLabel.textContent = deviceState.connected ? "CONNECTED" : "DISCONNECTED";
+  elements.piTemperature.textContent = formatTemperatureF(deviceState.temperatureF);
+}
+
+function setDeviceConnected(connected) {
+  deviceState.connected = connected;
+  if (!connected) {
+    deviceState.temperatureF = null;
+  }
+  renderDeviceStatus();
+}
+
+function applyPiTemperature(payload) {
+  if (!isObject(payload)) return;
+
+  const fahrenheit = Number(payload.fahrenheit);
+  if (!Number.isFinite(fahrenheit)) return;
+
+  deviceState.temperatureF = fahrenheit;
+  renderDeviceStatus();
 }
 
 function syncLidarCanvasSize() {
@@ -188,15 +228,39 @@ function extractLatestLidarScan(events) {
   return null;
 }
 
-function handleSnapshotMessage(message) {
-  const payload = extractLatestLidarScan(message.state?.recentEvents);
-  if (payload) {
-    updateLidarScan(payload);
+function extractLatestPiTemperature(events) {
+  if (!Array.isArray(events)) return null;
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isObject(event) || event.deviceId !== backend.deviceId) continue;
+    if (event.eventType !== "pi.temperature") continue;
+    return event.payload;
   }
+
+  return null;
+}
+
+function handleSnapshotMessage(message) {
+  const latestEvents = message.state?.recentEvents;
+  const lidarPayload = extractLatestLidarScan(latestEvents);
+  if (lidarPayload) {
+    updateLidarScan(lidarPayload);
+  }
+
+  const temperaturePayload = extractLatestPiTemperature(latestEvents);
+  if (temperaturePayload) {
+    applyPiTemperature(temperaturePayload);
+  }
+
+  const devices = Array.isArray(message.state?.devices) ? message.state.devices : [];
+  const currentDevice = devices.find((device) => isObject(device) && device.deviceId === backend.deviceId);
+  setDeviceConnected(Boolean(currentDevice?.connected));
 }
 
 function handlePiStatusMessage(message) {
   if (message.deviceId !== backend.deviceId) return;
+  setDeviceConnected(message.status === "online");
   if (message.status === "offline") {
     lidarState.staleStatusEnabled = false;
     setLidarStatus("DEVICE OFFLINE", "warn");
@@ -214,6 +278,11 @@ function handlePiEventMessage(message) {
 
   if (event.eventType === "lidar.status") {
     applyLidarStatus(event.payload);
+    return;
+  }
+
+  if (event.eventType === "pi.temperature") {
+    applyPiTemperature(event.payload);
   }
 }
 
@@ -323,6 +392,7 @@ function connectBackendSocket() {
     if (backend.ws !== ws) return;
 
     backend.ws = null;
+    setDeviceConnected(false);
     lidarState.staleStatusEnabled = false;
     setLidarStatus("BACKEND OFFLINE", "warn");
     window.clearTimeout(backend.reconnectTimer);
@@ -498,6 +568,8 @@ async function startCameraFeeds() {
 
   await startSecondaryCamera();
 }
+
+renderDeviceStatus();
 
 function setPressed(key, pressed) {
   const button = controlButtons.get(key);

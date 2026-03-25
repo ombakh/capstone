@@ -6,6 +6,12 @@
   --pressed-bg: rgba(136, 188, 164, 0.4);
   --pressed-border: rgba(197, 238, 217, 0.78);
   --text: #f1f8ff;
+  --status-green: #89f0a1;
+  --status-green-border: rgba(125, 247, 150, 0.54);
+  --status-green-bg: rgba(14, 54, 25, 0.72);
+  --status-red: #ff8e93;
+  --status-red-border: rgba(255, 147, 152, 0.5);
+  --status-red-bg: rgba(63, 18, 23, 0.74);
 }
 
 * {
@@ -269,6 +275,56 @@ body {
   stroke-linejoin: round;
 }
 
+.pi-status-panel {
+  min-width: 170px;
+  padding: 0.72rem 0.82rem;
+  border-radius: 12px;
+  border: 1px solid var(--status-red-border);
+  background: var(--status-red-bg);
+  color: var(--text);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.34);
+}
+
+.pi-status-panel.connected {
+  border-color: var(--status-green-border);
+  background: var(--status-green-bg);
+}
+
+.pi-status-head {
+  display: flex;
+  align-items: center;
+  gap: 0.48rem;
+}
+
+.pi-status-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: var(--status-red);
+  box-shadow: 0 0 0 0.18rem rgba(255, 142, 147, 0.16);
+  flex: 0 0 auto;
+}
+
+.pi-status-panel.connected .pi-status-dot {
+  background: var(--status-green);
+  box-shadow: 0 0 0 0.18rem rgba(137, 240, 161, 0.15);
+}
+
+.pi-connection-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pi-temperature {
+  margin-top: 0.36rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  color: rgba(240, 250, 255, 0.92);
+}
+
 .settings-menu {
   min-width: 176px;
   padding: 0.58rem;
@@ -374,6 +430,11 @@ body {
   .settings-shell {
     top: 0.8rem;
     right: 0.8rem;
+  }
+
+  .pi-status-panel {
+    min-width: 154px;
+    padding: 0.62rem 0.72rem;
   }
 
   .lidar-map {

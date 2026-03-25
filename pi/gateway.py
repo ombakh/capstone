@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -42,9 +43,15 @@ except ImportError:  # pragma: no cover
 
 JsonDict = Dict[str, Any]
 
+CPU_TEMPERATURE_PATH = "/sys/class/thermal/thermal_zone0/temp"
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def celsius_to_fahrenheit(celsius: float) -> float:
+    return (celsius * 9.0 / 5.0) + 32.0
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -262,6 +269,64 @@ class CameraMonitor:
         self._captures.clear()
 
 
+class PiTemperatureReader:
+    def __init__(self, sysfs_path: str = CPU_TEMPERATURE_PATH) -> None:
+        self.sysfs_path = sysfs_path
+
+    def read(self) -> Optional[JsonDict]:
+        celsius = self._read_celsius()
+        if celsius is None:
+            return None
+
+        fahrenheit = celsius_to_fahrenheit(celsius)
+        return {
+            "celsius": round(celsius, 1),
+            "fahrenheit": round(fahrenheit, 1),
+        }
+
+    def _read_celsius(self) -> Optional[float]:
+        return self._read_sysfs_celsius() or self._read_vcgencmd_celsius()
+
+    def _read_sysfs_celsius(self) -> Optional[float]:
+        try:
+            with open(self.sysfs_path, "r", encoding="utf-8") as handle:
+                raw_value = handle.read().strip()
+        except OSError:
+            return None
+
+        try:
+            parsed = float(raw_value)
+        except ValueError:
+            return None
+
+        return parsed / 1000.0 if parsed > 400.0 else parsed
+
+    @staticmethod
+    def _read_vcgencmd_celsius() -> Optional[float]:
+        try:
+            completed = subprocess.run(
+                ["vcgencmd", "measure_temp"],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=1.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+        output = completed.stdout.strip()
+        prefix = "temp="
+        suffix = "'C"
+        if not output.startswith(prefix) or suffix not in output:
+            return None
+
+        value_text = output[len(prefix):output.index(suffix)]
+        try:
+            return float(value_text)
+        except ValueError:
+            return None
+
+
 class LidarBridge:
     def __init__(
         self,
@@ -437,6 +502,7 @@ class PiGateway:
         self.config = config
         self.esp = EspSerialBridge(config.esp_serial_port, config.esp_baud)
         self.cameras = CameraMonitor(config.camera_left_index, config.camera_right_index)
+        self.temperature = PiTemperatureReader()
         self.lidar = LidarBridge(
             enabled=config.lidar_enabled,
             port=config.lidar_port,
@@ -700,6 +766,10 @@ class PiGateway:
 
             lidar_status = self.lidar.status()
             await self._publish_lidar_connection_if_changed(ws, lidar_status)
+
+            temperature_payload = self.temperature.read()
+            if temperature_payload:
+                await self._send_event(ws, event_type="pi.temperature", payload=temperature_payload)
 
     async def _esp_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         if self.config.motor_echo_only:
