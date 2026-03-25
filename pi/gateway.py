@@ -680,6 +680,15 @@ class PiGateway:
             )
             return
 
+        if command_name == "ping":
+            await self._send_ack(
+                ws,
+                command_id=command_id,
+                status="pong",
+                details={"command": command_name},
+            )
+            return
+
         if command_name == "camera_status":
             await self._send_event(
                 ws,

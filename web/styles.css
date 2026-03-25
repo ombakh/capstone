@@ -325,6 +325,13 @@ body {
   color: rgba(240, 250, 255, 0.92);
 }
 
+.pi-latency {
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: rgba(224, 240, 252, 0.78);
+}
+
 .settings-menu {
   min-width: 176px;
   padding: 0.58rem;

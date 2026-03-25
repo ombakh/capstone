@@ -10,6 +10,7 @@ const elements = {
   piStatusPanel: document.getElementById("pi-status-panel"),
   piConnectionLabel: document.getElementById("pi-connection-label"),
   piTemperature: document.getElementById("pi-temperature"),
+  piLatency: document.getElementById("pi-latency"),
   lidarCanvas: document.getElementById("lidar-canvas"),
   lidarStatus: document.getElementById("lidar-status")
 };
@@ -58,7 +59,8 @@ const driveState = {
 
 const deviceState = {
   connected: false,
-  temperatureF: null
+  temperatureF: null,
+  latencyMs: null
 };
 
 const lidarState = {
@@ -73,6 +75,12 @@ const lidarState = {
   lastWidth: 0,
   lastHeight: 0,
   lastDevicePixelRatio: 0
+};
+
+const latencyState = {
+  pendingByNonce: new Map(),
+  pendingByCommandId: new Map(),
+  timer: null
 };
 
 function isObject(value) {
@@ -115,20 +123,76 @@ function formatTemperatureF(value) {
   return `PI TEMP ${value.toFixed(1)} F`;
 }
 
+function formatLatencyMs(value) {
+  if (!Number.isFinite(value)) return "LATENCY -- MS";
+  return `LATENCY ${Math.round(value)} MS`;
+}
+
 function renderDeviceStatus() {
-  if (!elements.piStatusPanel || !elements.piConnectionLabel || !elements.piTemperature) return;
+  if (!elements.piStatusPanel || !elements.piConnectionLabel || !elements.piTemperature || !elements.piLatency) {
+    return;
+  }
 
   elements.piStatusPanel.classList.toggle("connected", deviceState.connected);
   elements.piStatusPanel.classList.toggle("disconnected", !deviceState.connected);
   elements.piConnectionLabel.textContent = deviceState.connected ? "CONNECTED" : "DISCONNECTED";
   elements.piTemperature.textContent = formatTemperatureF(deviceState.temperatureF);
+  elements.piLatency.textContent = formatLatencyMs(deviceState.latencyMs);
+}
+
+function clearPendingLatencyState() {
+  latencyState.pendingByNonce.clear();
+  latencyState.pendingByCommandId.clear();
+}
+
+function stopLatencySampling() {
+  if (!latencyState.timer) return;
+  window.clearInterval(latencyState.timer);
+  latencyState.timer = null;
+}
+
+function sendLatencyPing() {
+  if (!deviceState.connected || !backend.ws || backend.ws.readyState !== WebSocket.OPEN) return;
+  if (latencyState.pendingByNonce.size > 0 || latencyState.pendingByCommandId.size > 0) return;
+
+  const clientNonce = crypto.randomUUID();
+  latencyState.pendingByNonce.set(clientNonce, performance.now());
+  sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command: "ping",
+      params: {
+        clientNonce
+      }
+    }
+  });
+}
+
+function startLatencySampling() {
+  if (latencyState.timer) return;
+
+  sendLatencyPing();
+  latencyState.timer = window.setInterval(sendLatencyPing, 3000);
+}
+
+function syncLatencySampling() {
+  if (deviceState.connected && backend.ws && backend.ws.readyState === WebSocket.OPEN) {
+    startLatencySampling();
+    return;
+  }
+
+  stopLatencySampling();
 }
 
 function setDeviceConnected(connected) {
   deviceState.connected = connected;
   if (!connected) {
     deviceState.temperatureF = null;
+    deviceState.latencyMs = null;
+    clearPendingLatencyState();
   }
+  syncLatencySampling();
   renderDeviceStatus();
 }
 
@@ -307,6 +371,28 @@ function handlePiEventMessage(message) {
 function handlePiAckMessage(message) {
   if (message.deviceId !== backend.deviceId) return;
   setDeviceConnected(true);
+
+  const sentAt = latencyState.pendingByCommandId.get(message.ack?.commandId);
+  if (Number.isFinite(sentAt)) {
+    deviceState.latencyMs = performance.now() - sentAt;
+    latencyState.pendingByCommandId.delete(message.ack.commandId);
+    renderDeviceStatus();
+  }
+}
+
+function handleCommandAcceptedMessage(message) {
+  const command = message.command;
+  if (!isObject(command) || command.deviceId !== backend.deviceId) return;
+  if (command.command !== "ping") return;
+
+  const clientNonce = command.params?.clientNonce;
+  if (typeof clientNonce !== "string") return;
+
+  const sentAt = latencyState.pendingByNonce.get(clientNonce);
+  if (!Number.isFinite(sentAt)) return;
+
+  latencyState.pendingByNonce.delete(clientNonce);
+  latencyState.pendingByCommandId.set(command.id, sentAt);
 }
 
 function handleBackendMessage(message) {
@@ -329,6 +415,11 @@ function handleBackendMessage(message) {
 
   if (message.type === "pi:ack") {
     handlePiAckMessage(message);
+    return;
+  }
+
+  if (message.type === "command:accepted") {
+    handleCommandAcceptedMessage(message);
   }
 }
 
@@ -437,6 +528,7 @@ function connectBackendSocket() {
     lidarState.staleStatusEnabled = true;
     void syncBackendState();
     startBackendStateSync();
+    syncLatencySampling();
     if (!lidarState.lastScanAtMs) {
       setLidarStatus("CONNECTED", "warn");
     }
@@ -446,6 +538,8 @@ function connectBackendSocket() {
     if (backend.ws !== ws) return;
 
     backend.ws = null;
+    stopLatencySampling();
+    clearPendingLatencyState();
     setDeviceConnected(false);
     lidarState.staleStatusEnabled = false;
     setLidarStatus("BACKEND OFFLINE", "warn");
