@@ -1,22 +1,25 @@
 # Raspberry Pi Gateway Base
 
-`gateway.py` is the bridge between backend, cameras, and ESP32.
+`gateway.py` is the bridge between backend, optional sensors, and optional ESP32
+motor-control firmware.
 
 Responsibilities:
 
 - Connect to backend WebSocket as a Pi device (`role=pi`).
-- Forward drive/motor commands from backend to ESP32 over serial.
+- Print incoming drive commands in echo mode for no-hardware testing.
+- Optionally forward drive/motor commands to ESP32 over serial.
 - Publish ESP32 telemetry to backend as Pi events.
 - Publish status for two attached cameras.
 - Stream live LiDAR scans (`lidar.scan`) to backend for web rendering.
 
 ## Install
 
+From the repo root on the Pi:
+
 ```bash
-cd pi
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+make pi-setup
 ```
 
 Optional for camera probing:
@@ -27,18 +30,36 @@ sudo apt-get install -y python3-opencv
 
 ## Run
 
+With the virtual environment activated:
+
 ```bash
-python3 gateway.py
+make pi-run
 ```
 
 For no-hardware testing, run the gateway in terminal echo mode:
 
 ```bash
-PI_MOTOR_ECHO_ONLY=1 python3 gateway.py
+make pi-run-echo
 ```
 
 In that mode, incoming `drive` / `stop` commands are printed to the Pi terminal
 instead of being forwarded to an ESP32 serial device.
+
+To connect the Pi to a Mac-hosted backend:
+
+```bash
+make pi-connect-echo MAC_IP=<mac-ip>
+```
+
+If the local Wi-Fi blocks device-to-device traffic, use the Mac's Tailscale IP.
+
+## Verified Development Flow
+
+1. Start the backend and web app on the Mac with `make mac-start`.
+2. Activate the Pi virtual environment.
+3. Run `make pi-connect-echo MAC_IP=<mac-ip-or-tailscale-ip>`.
+4. Press the web app arrow keys on the Mac.
+5. Watch the Pi terminal print the received motor commands.
 
 ## Direct Arrow-Key Control (Pi -> ESP32)
 
@@ -82,6 +103,14 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_RECONNECT_MAX_SEC` default: `20`
 
 ## Command Flow
+
+Echo mode:
+
+- Web UI sends command to backend (`/api/ui/command` or `/api/ui/drive`).
+- Backend forwards command to this gateway as `ui:command`.
+- Gateway prints the command in the Pi terminal and acknowledges it.
+
+ESP serial mode:
 
 - Web UI sends command to backend (`/api/ui/command` or `/api/ui/drive`).
 - Backend forwards command to this gateway as `ui:command`.
