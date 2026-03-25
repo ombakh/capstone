@@ -22,6 +22,7 @@ const DEFAULT_DEVICE_ID = "pi-01";
 const DEFAULT_BACKEND_PORT = "3000";
 const DEFAULT_DRIVE_SPEED = 0.55;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
+const BACKEND_STATE_SYNC_MS = 2000;
 const LIDAR_STALE_AFTER_MS = 2500;
 const LIDAR_SWEEP_SPEED = 0.0032;
 
@@ -44,8 +45,10 @@ const state = {
 const backend = {
   ws: null,
   wsUrl: resolveBackendWsUrl(),
+  apiBaseUrl: resolveBackendApiBaseUrl(),
   deviceId: resolveDeviceId(),
-  reconnectTimer: null
+  reconnectTimer: null,
+  stateSyncTimer: null
 };
 
 const driveState = {
@@ -84,6 +87,16 @@ function resolveBackendWsUrl() {
   const host = urlParams.get("backendHost") || window.location.hostname || "127.0.0.1";
   const port = urlParams.get("backendPort") || DEFAULT_BACKEND_PORT;
   return `${protocol}://${host}:${port}/ws?role=ui`;
+}
+
+function resolveBackendApiBaseUrl() {
+  const explicitApiBaseUrl = urlParams.get("backendHttp");
+  if (explicitApiBaseUrl) return explicitApiBaseUrl.replace(/\/$/, "");
+
+  const protocol = window.location.protocol === "https:" ? "https" : "http";
+  const host = urlParams.get("backendHost") || window.location.hostname || "127.0.0.1";
+  const port = urlParams.get("backendPort") || DEFAULT_BACKEND_PORT;
+  return `${protocol}://${host}:${port}`;
 }
 
 function resolveDeviceId() {
@@ -241,8 +254,8 @@ function extractLatestPiTemperature(events) {
   return null;
 }
 
-function handleSnapshotMessage(message) {
-  const latestEvents = message.state?.recentEvents;
+function applySerializableState(statePayload) {
+  const latestEvents = statePayload?.recentEvents;
   const lidarPayload = extractLatestLidarScan(latestEvents);
   if (lidarPayload) {
     updateLidarScan(lidarPayload);
@@ -253,9 +266,13 @@ function handleSnapshotMessage(message) {
     applyPiTemperature(temperaturePayload);
   }
 
-  const devices = Array.isArray(message.state?.devices) ? message.state.devices : [];
+  const devices = Array.isArray(statePayload?.devices) ? statePayload.devices : [];
   const currentDevice = devices.find((device) => isObject(device) && device.deviceId === backend.deviceId);
   setDeviceConnected(Boolean(currentDevice?.connected));
+}
+
+function handleSnapshotMessage(message) {
+  applySerializableState(message.state);
 }
 
 function handlePiStatusMessage(message) {
@@ -313,6 +330,30 @@ function handleBackendMessage(message) {
   if (message.type === "pi:ack") {
     handlePiAckMessage(message);
   }
+}
+
+async function syncBackendState() {
+  try {
+    const response = await fetch(`${backend.apiBaseUrl}/api/state`, {
+      cache: "no-store"
+    });
+    if (!response.ok) return;
+
+    const payload = await response.json();
+    applySerializableState(payload);
+  } catch {
+    if (!backend.ws) {
+      setDeviceConnected(false);
+    }
+  }
+}
+
+function startBackendStateSync() {
+  if (backend.stateSyncTimer) return;
+
+  backend.stateSyncTimer = window.setInterval(() => {
+    void syncBackendState();
+  }, BACKEND_STATE_SYNC_MS);
 }
 
 function drawLidarFrame(timestampMs) {
@@ -394,6 +435,8 @@ function connectBackendSocket() {
   ws.addEventListener("open", () => {
     console.info("Connected to backend control socket.");
     lidarState.staleStatusEnabled = true;
+    void syncBackendState();
+    startBackendStateSync();
     if (!lidarState.lastScanAtMs) {
       setLidarStatus("CONNECTED", "warn");
     }
