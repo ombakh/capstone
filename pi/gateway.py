@@ -569,6 +569,7 @@ class PiGateway:
                     "lidar": self.lidar.status(),
                 },
             )
+            await self._publish_temperature(ws)
 
             tasks = [
                 asyncio.create_task(self._recv_loop(ws), name="recv_loop"),
@@ -635,6 +636,11 @@ class PiGateway:
                 },
             },
         )
+
+    async def _publish_temperature(self, ws: websockets.WebSocketClientProtocol) -> None:
+        temperature_payload = self.temperature.read()
+        if temperature_payload:
+            await self._send_event(ws, event_type="pi.temperature", payload=temperature_payload)
 
     async def _handle_command(self, ws: websockets.WebSocketClientProtocol, command: JsonDict) -> None:
         command_id = str(command.get("id", ""))
@@ -766,10 +772,7 @@ class PiGateway:
 
             lidar_status = self.lidar.status()
             await self._publish_lidar_connection_if_changed(ws, lidar_status)
-
-            temperature_payload = self.temperature.read()
-            if temperature_payload:
-                await self._send_event(ws, event_type="pi.temperature", payload=temperature_payload)
+            await self._publish_temperature(ws)
 
     async def _esp_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         if self.config.motor_echo_only:

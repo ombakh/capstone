@@ -270,6 +270,7 @@ function handlePiStatusMessage(message) {
 function handlePiEventMessage(message) {
   const event = message.event;
   if (!isObject(event) || event.deviceId !== backend.deviceId) return;
+  setDeviceConnected(true);
 
   if (event.eventType === "lidar.scan") {
     updateLidarScan(event.payload);
@@ -284,6 +285,11 @@ function handlePiEventMessage(message) {
   if (event.eventType === "pi.temperature") {
     applyPiTemperature(event.payload);
   }
+}
+
+function handlePiAckMessage(message) {
+  if (message.deviceId !== backend.deviceId) return;
+  setDeviceConnected(true);
 }
 
 function handleBackendMessage(message) {
@@ -301,6 +307,11 @@ function handleBackendMessage(message) {
 
   if (message.type === "pi:event") {
     handlePiEventMessage(message);
+    return;
+  }
+
+  if (message.type === "pi:ack") {
+    handlePiAckMessage(message);
   }
 }
 
