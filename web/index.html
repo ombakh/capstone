@@ -4,10 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260327-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260327-2" />
 </head>
 <body>
-  <main class="app">
+  <main id="app-root" class="app">
     <video id="camera-feed" class="camera-feed" autoplay playsinline muted></video>
     <div class="overlay">
       <div class="lidar-side">
@@ -41,25 +41,33 @@
           </div>
         </div>
 
-        <div id="secondary-feed-shell" class="secondary-feed-shell" aria-label="Secondary camera feed">
-          <video id="secondary-feed" class="secondary-feed" autoplay playsinline muted></video>
-          <button id="switch-camera" class="switch-camera" type="button" aria-label="Switch camera">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M17 8a5 5 0 0 0-8.5-3.5" />
-              <path d="M7 8V5h3" />
-              <path d="M7 16a5 5 0 0 0 8.5 3.5" />
-              <path d="M17 16v3h-3" />
-            </svg>
-          </button>
-          <button
-            id="secondary-toggle"
-            class="secondary-toggle"
-            type="button"
-            aria-label="Hide secondary camera feed"
-            aria-expanded="true"
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
+        <div class="camera-rail" aria-label="Camera previews">
+          <div id="primary-mini-feed-shell" class="primary-mini-feed-shell camera-panel" aria-label="Primary camera preview">
+            <span class="camera-panel-label">Primary</span>
+            <video id="primary-mini-feed" class="secondary-feed" autoplay playsinline muted></video>
+          </div>
+
+          <div id="secondary-feed-shell" class="secondary-feed-shell camera-panel" aria-label="Secondary camera feed">
+            <span class="camera-panel-label">Secondary</span>
+            <video id="secondary-feed" class="secondary-feed" autoplay playsinline muted></video>
+            <button id="switch-camera" class="switch-camera" type="button" aria-label="Switch camera">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M17 8a5 5 0 0 0-8.5-3.5" />
+                <path d="M7 8V5h3" />
+                <path d="M7 16a5 5 0 0 0 8.5 3.5" />
+                <path d="M17 16v3h-3" />
+              </svg>
+            </button>
+            <button
+              id="secondary-toggle"
+              class="secondary-toggle"
+              type="button"
+              aria-label="Hide secondary camera feed"
+              aria-expanded="true"
+            >
+              <span aria-hidden="true">‹</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -85,6 +93,15 @@
           </label>
         </div>
 
+        <button
+          id="lidar-mode-button"
+          class="lidar-mode-button"
+          type="button"
+          aria-pressed="false"
+        >
+          LiDAR View
+        </button>
+
         <div id="pi-status-panel" class="pi-status-panel disconnected" aria-live="polite">
           <div class="pi-status-head">
             <span class="pi-status-dot" aria-hidden="true"></span>
@@ -104,6 +121,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260327-1"></script>
+  <script src="./app.js?v=20260327-2"></script>
 </body>
 </html>

@@ -34,6 +34,13 @@ body {
   background: #000;
 }
 
+.app.lidar-mode {
+  background:
+    radial-gradient(circle at 28% 22%, rgba(20, 78, 120, 0.3), transparent 34%),
+    radial-gradient(circle at 72% 18%, rgba(9, 28, 49, 0.64), transparent 30%),
+    linear-gradient(180deg, #040a12, #02050a 72%);
+}
+
 .camera-feed {
   position: absolute;
   inset: 0;
@@ -42,10 +49,21 @@ body {
   object-fit: cover;
   object-position: center;
   background: radial-gradient(circle at 30% 20%, #2f4253, #0d131a 56%, #080a0d);
+  transition: opacity 0.26s ease, filter 0.26s ease, transform 0.26s ease;
 }
 
 .camera-feed.full-view {
   object-fit: contain;
+}
+
+.app.lidar-mode .camera-feed {
+  opacity: 0.14;
+  filter: blur(16px) saturate(0.55);
+  transform: scale(1.04);
+}
+
+.app.lidar-mode .camera-feed.full-view {
+  object-fit: cover;
 }
 
 .overlay {
@@ -66,6 +84,12 @@ body {
   gap: 0.64rem;
 }
 
+.app.lidar-mode .lidar-side {
+  width: min(68vw, 860px);
+  max-width: calc(100vw - clamp(190px, 24vw, 290px) - 4rem);
+  gap: 0.9rem;
+}
+
 .lidar-map {
   position: relative;
   width: clamp(190px, 33vw, 280px);
@@ -77,6 +101,13 @@ body {
   pointer-events: auto;
 }
 
+.app.lidar-mode .lidar-map {
+  width: min(68vw, calc(100vh - 12.75rem));
+  max-width: 100%;
+  border-width: 1.2px;
+  box-shadow: 0 26px 54px rgba(0, 0, 0, 0.34);
+}
+
 .lidar-zoom {
   width: clamp(190px, 33vw, 280px);
   padding: 0.68rem 0.75rem 0.74rem;
@@ -85,6 +116,11 @@ body {
   background: linear-gradient(180deg, rgba(8, 24, 39, 0.9), rgba(5, 16, 29, 0.74));
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
   pointer-events: auto;
+}
+
+.app.lidar-mode .lidar-zoom {
+  width: min(68vw, calc(100vh - 12.75rem));
+  max-width: 100%;
 }
 
 .lidar-zoom-head {
@@ -244,7 +280,21 @@ body {
   color: rgba(255, 212, 148, 0.95);
 }
 
-.secondary-feed-shell {
+.camera-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.64rem;
+}
+
+.app.lidar-mode .camera-rail {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 1rem);
+  width: clamp(185px, 22vw, 260px);
+}
+
+.camera-panel {
   position: relative;
   width: clamp(190px, 32vw, 285px);
   aspect-ratio: 4 / 3;
@@ -256,8 +306,47 @@ body {
   transition: transform 0.24s ease;
 }
 
+.app.lidar-mode .camera-panel {
+  width: 100%;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+}
+
+.primary-mini-feed-shell {
+  display: none;
+}
+
+.app.lidar-mode .primary-mini-feed-shell {
+  display: block;
+}
+
+.camera-panel-label {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.52rem;
+  z-index: 2;
+  display: none;
+  padding: 0.2rem 0.46rem;
+  border-radius: 999px;
+  border: 1px solid rgba(215, 241, 255, 0.24);
+  background: rgba(4, 12, 22, 0.62);
+  color: rgba(234, 247, 255, 0.88);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  backdrop-filter: blur(6px);
+}
+
+.app.lidar-mode .camera-panel-label {
+  display: inline-flex;
+}
+
 .secondary-feed-shell.collapsed {
   transform: translateX(calc(-100% + 2.5rem));
+}
+
+.app.lidar-mode .secondary-feed-shell.collapsed {
+  transform: none;
 }
 
 .secondary-feed-shell.secondary-unavailable::before {
@@ -284,6 +373,11 @@ body {
   background: radial-gradient(circle at 20% 18%, #38597a, #101b29 70%, #0a111a);
 }
 
+.app.lidar-mode .switch-camera {
+  top: auto;
+  bottom: 0.48rem;
+}
+
 .secondary-toggle {
   position: absolute;
   top: 50%;
@@ -305,6 +399,10 @@ body {
   backdrop-filter: blur(5px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
   z-index: 4;
+}
+
+.app.lidar-mode .secondary-toggle {
+  display: none;
 }
 
 .secondary-toggle:active {
@@ -384,6 +482,32 @@ body {
   stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.lidar-mode-button {
+  min-width: 122px;
+  padding: 0.54rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid rgba(150, 214, 255, 0.54);
+  background: linear-gradient(180deg, rgba(8, 27, 45, 0.92), rgba(4, 15, 28, 0.86));
+  color: rgba(236, 249, 255, 0.97);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.3);
+}
+
+.lidar-mode-button:active {
+  transform: scale(0.97);
+}
+
+.lidar-mode-button[aria-pressed="true"] {
+  border-color: rgba(122, 255, 187, 0.72);
+  background: linear-gradient(180deg, rgba(10, 43, 60, 0.96), rgba(7, 27, 40, 0.9));
 }
 
 .pi-status-panel {
@@ -480,6 +604,10 @@ body {
   accent-color: #7cc3ff;
 }
 
+.settings-item input:disabled + span {
+  opacity: 0.46;
+}
+
 .controls {
   position: absolute;
   right: 1rem;
@@ -535,6 +663,33 @@ body {
   border-color: var(--pressed-border);
 }
 
+@media (max-width: 960px) {
+  .app.lidar-mode .lidar-side {
+    width: calc(100vw - 2rem);
+    max-width: none;
+  }
+
+  .app.lidar-mode .lidar-map {
+    width: min(100%, 76vh);
+  }
+
+  .app.lidar-mode .lidar-zoom {
+    width: min(100%, 76vh);
+  }
+
+  .app.lidar-mode .camera-rail {
+    position: static;
+    width: min(100%, 76vh);
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .app.lidar-mode .camera-panel {
+    width: calc(50% - 0.32rem);
+    min-width: 0;
+  }
+}
+
 @media (max-width: 600px) {
   .overlay {
     padding: 0.8rem;
@@ -564,8 +719,31 @@ body {
     padding: 0.6rem 0.68rem 0.66rem;
   }
 
-  .secondary-feed-shell {
+  .camera-panel {
     width: clamp(170px, 48vw, 235px);
+  }
+
+  .lidar-mode-button {
+    min-width: 112px;
+    padding: 0.48rem 0.72rem;
+    font-size: 0.68rem;
+  }
+
+  .app.lidar-mode .lidar-map {
+    width: min(100%, 70vh);
+  }
+
+  .app.lidar-mode .lidar-zoom {
+    width: min(100%, 70vh);
+  }
+
+  .app.lidar-mode .camera-rail {
+    width: min(100%, 70vh);
+    gap: 0.5rem;
+  }
+
+  .app.lidar-mode .camera-panel {
+    width: calc(50% - 0.25rem);
   }
 
   .controls {

@@ -1,5 +1,7 @@
 const elements = {
+  app: document.getElementById("app-root"),
   video: document.getElementById("camera-feed"),
+  primaryMiniVideo: document.getElementById("primary-mini-feed"),
   secondaryVideo: document.getElementById("secondary-feed"),
   secondaryFeedShell: document.getElementById("secondary-feed-shell"),
   secondaryToggleBtn: document.getElementById("secondary-toggle"),
@@ -7,6 +9,7 @@ const elements = {
   settingsBtn: document.getElementById("settings-button"),
   settingsMenu: document.getElementById("settings-menu"),
   fullCameraViewToggle: document.getElementById("full-camera-view-toggle"),
+  lidarModeBtn: document.getElementById("lidar-mode-button"),
   piStatusPanel: document.getElementById("pi-status-panel"),
   piConnectionLabel: document.getElementById("pi-connection-label"),
   piTemperature: document.getElementById("pi-temperature"),
@@ -33,6 +36,10 @@ const LIDAR_SWEEP_SPEED = 0.0032;
 const LIDAR_ZOOM_MIN = 1;
 const LIDAR_ZOOM_MAX = 5;
 const LIDAR_ZOOM_STEP = 0.25;
+const LIDAR_SEGMENT_MAX_ANGLE_GAP_DEG = 8;
+const LIDAR_SEGMENT_MAX_PIXEL_GAP_RATIO = 0.18;
+const LIDAR_SEGMENT_DISTANCE_GAP_RATIO = 0.16;
+const LIDAR_SEGMENT_MIN_DISTANCE_GAP_MM = 260;
 
 const DRIVE_KEY_TO_DIRECTION = {
   ArrowUp: "forward",
@@ -47,7 +54,8 @@ const state = {
   facingMode: "user",
   primaryStream: null,
   secondaryStream: null,
-  secondaryCollapsed: false
+  secondaryCollapsed: false,
+  viewMode: "camera"
 };
 
 const backend = {
@@ -288,6 +296,66 @@ function normalizeLidarPoints(points) {
       return [angle, distance];
     })
     .filter(Boolean);
+}
+
+function projectVisibleLidarPoints(points, maxDistance, centerX, centerY, radius) {
+  return [...points]
+    .sort((left, right) => left[0] - right[0])
+    .filter(([angleDeg, distanceMm]) => distanceMm <= maxDistance)
+    .map(([angleDeg, distanceMm]) => {
+      const angleRad = ((angleDeg - 90) * Math.PI) / 180;
+      const distanceRatio = Math.min(1, distanceMm / maxDistance);
+      const pointRadius = distanceRatio * radius;
+      const x = centerX + Math.cos(angleRad) * pointRadius;
+      const y = centerY + Math.sin(angleRad) * pointRadius;
+
+      return {
+        angleDeg,
+        distanceMm,
+        distanceRatio,
+        x,
+        y
+      };
+    });
+}
+
+function buildLidarPointSegments(projectedPoints, radius) {
+  if (projectedPoints.length < 2) return [];
+
+  const segments = [];
+  let currentSegment = [projectedPoints[0]];
+
+  for (let index = 1; index < projectedPoints.length; index += 1) {
+    const previousPoint = projectedPoints[index - 1];
+    const currentPoint = projectedPoints[index];
+    const angleGapDeg = currentPoint.angleDeg - previousPoint.angleDeg;
+    const distanceGapMm = Math.abs(currentPoint.distanceMm - previousPoint.distanceMm);
+    const allowedDistanceGapMm = Math.max(
+      LIDAR_SEGMENT_MIN_DISTANCE_GAP_MM,
+      Math.max(previousPoint.distanceMm, currentPoint.distanceMm) * LIDAR_SEGMENT_DISTANCE_GAP_RATIO
+    );
+    const pixelGap = Math.hypot(currentPoint.x - previousPoint.x, currentPoint.y - previousPoint.y);
+
+    if (
+      angleGapDeg <= LIDAR_SEGMENT_MAX_ANGLE_GAP_DEG &&
+      distanceGapMm <= allowedDistanceGapMm &&
+      pixelGap <= radius * LIDAR_SEGMENT_MAX_PIXEL_GAP_RATIO
+    ) {
+      currentSegment.push(currentPoint);
+      continue;
+    }
+
+    if (currentSegment.length > 1) {
+      segments.push(currentSegment);
+    }
+    currentSegment = [currentPoint];
+  }
+
+  if (currentSegment.length > 1) {
+    segments.push(currentSegment);
+  }
+
+  return segments;
 }
 
 function updateLidarScan(payload) {
@@ -555,26 +623,52 @@ function drawLidarFrame(timestampMs) {
   const maxDistance = getLidarViewDistanceMm();
   const scanAgeMs = lidarState.lastScanAtMs ? Date.now() - lidarState.lastScanAtMs : Infinity;
   const freshness = scanAgeMs < lidarState.staleAfterMs ? 1 : 0.42;
+  const projectedPoints = projectVisibleLidarPoints(lidarState.points, maxDistance, centerX, centerY, radius);
+  const pointSegments = buildLidarPointSegments(projectedPoints, radius);
 
-  for (const [angleDeg, distanceMm] of lidarState.points) {
-    if (distanceMm > maxDistance) continue;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = `rgba(111, 241, 255, ${(0.2 * freshness).toFixed(3)})`;
 
-    const angleRad = ((angleDeg - 90) * Math.PI) / 180;
-    const distanceRatio = Math.min(1, distanceMm / maxDistance);
-    const pointRadius = distanceRatio * radius;
-    const x = centerX + Math.cos(angleRad) * pointRadius;
-    const y = centerY + Math.sin(angleRad) * pointRadius;
-
-    const nearFactor = 1 - distanceRatio;
-    const alpha = (0.24 + nearFactor * 0.72) * freshness;
-    const pointSize = 1.5 + nearFactor * 2.3;
-    ctx.fillStyle = `rgba(122, 255, 187, ${Math.min(0.95, alpha).toFixed(3)})`;
-    ctx.fillRect(x - pointSize / 2, y - pointSize / 2, pointSize, pointSize);
+  for (const segment of pointSegments) {
+    const averageNearFactor =
+      segment.reduce((sum, point) => sum + (1 - point.distanceRatio), 0) / Math.max(1, segment.length);
+    const segmentAlpha = Math.min(0.72, (0.22 + averageNearFactor * 0.34) * freshness);
+    const segmentWidth = 1.3 + averageNearFactor * 1.9;
+    ctx.strokeStyle = `rgba(120, 224, 255, ${segmentAlpha.toFixed(3)})`;
+    ctx.lineWidth = segmentWidth;
+    ctx.beginPath();
+    ctx.moveTo(segment[0].x, segment[0].y);
+    for (let index = 1; index < segment.length; index += 1) {
+      ctx.lineTo(segment[index].x, segment[index].y);
+    }
+    ctx.stroke();
   }
 
-  ctx.fillStyle = "rgba(225, 255, 240, 0.92)";
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = `rgba(118, 255, 205, ${(0.3 * freshness).toFixed(3)})`;
+
+  for (const point of projectedPoints) {
+    const nearFactor = 1 - point.distanceRatio;
+    const alpha = Math.min(0.98, (0.38 + nearFactor * 0.6) * freshness);
+    const pointSize = 2.4 + nearFactor * 3.1;
+    ctx.fillStyle = `rgba(146, 255, 208, ${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, pointSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.fillStyle = "rgba(255, 196, 196, 0.34)";
   ctx.beginPath();
-  ctx.arc(centerX, centerY, 3.4, 0, Math.PI * 2);
+  ctx.arc(centerX, centerY, 8.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(255, 86, 86, 0.98)";
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, 4.3, 0, Math.PI * 2);
   ctx.fill();
 
   if (lidarState.staleStatusEnabled && scanAgeMs >= lidarState.staleAfterMs) {
@@ -700,6 +794,7 @@ function stopCameras() {
   state.primaryStream = null;
   state.secondaryStream = null;
   elements.video.srcObject = null;
+  elements.primaryMiniVideo.srcObject = null;
   elements.secondaryVideo.srcObject = null;
 }
 
@@ -732,6 +827,28 @@ function setFullCameraView(enabled) {
   elements.fullCameraViewToggle.checked = enabled;
 }
 
+function setViewMode(mode) {
+  const nextMode = mode === "lidar" ? "lidar" : "camera";
+  const lidarModeEnabled = nextMode === "lidar";
+
+  state.viewMode = nextMode;
+  elements.app?.classList.toggle("lidar-mode", lidarModeEnabled);
+  elements.lidarModeBtn.textContent = lidarModeEnabled ? "Camera View" : "LiDAR View";
+  elements.lidarModeBtn.setAttribute("aria-pressed", String(lidarModeEnabled));
+  elements.fullCameraViewToggle.disabled = lidarModeEnabled;
+
+  if (lidarModeEnabled) {
+    setFullCameraView(false);
+    setSecondaryCollapsed(false);
+  }
+
+  syncLidarCanvasSize();
+}
+
+function toggleViewMode() {
+  setViewMode(state.viewMode === "lidar" ? "camera" : "lidar");
+}
+
 async function requestCameraStream(constraints) {
   return navigator.mediaDevices.getUserMedia(constraints);
 }
@@ -741,6 +858,7 @@ async function startPrimaryCamera() {
     const stream = await requestCameraStream(getConstraints(state.facingMode));
     state.primaryStream = stream;
     elements.video.srcObject = stream;
+    elements.primaryMiniVideo.srcObject = stream;
     return true;
   } catch (error) {
     if (state.facingMode === "environment") {
@@ -845,6 +963,10 @@ function setupEvents() {
     setLidarZoom(event.target.value);
   });
 
+  elements.lidarModeBtn.addEventListener("click", () => {
+    toggleViewMode();
+  });
+
   elements.switchCameraBtn.addEventListener("click", async () => {
     state.facingMode = getOppositeFacingMode(state.facingMode);
     await startCameraFeeds();
@@ -896,6 +1018,7 @@ function setupEvents() {
 function boot() {
   setupEvents();
   setSettingsOpen(false);
+  setViewMode(state.viewMode);
   setFullCameraView(false);
   setSecondaryCollapsed(false);
   setLidarStatus("CONNECTING", "warn");
