@@ -8,7 +8,8 @@ WEB_HOST ?= 127.0.0.1
 BACKEND_HOST ?= 0.0.0.0
 BACKEND_PORT ?= 3000
 PI_DEVICE_ID ?= pi-01
-PI_LIDAR_ENABLED ?= 0
+PI_LIDAR_ENABLED ?= 1
+PI_LIDAR_PORT ?= /dev/ttyUSB0
 
 .PHONY: help serve check run backend-install backend-ensure backend-dev backend-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-connect-echo pi-keys
 
@@ -28,7 +29,7 @@ help:
 	@echo "  make pi-setup        - Install Raspberry Pi gateway deps"
 	@echo "  make pi-run          - Run Raspberry Pi gateway"
 	@echo "  make pi-run-echo     - Run Pi gateway in no-hardware echo mode"
-	@echo "  make pi-connect-echo MAC_IP=<ip> - Connect Pi echo mode to the Mac backend"
+	@echo "  make pi-connect-echo MAC_IP=<ip> - Connect Pi echo mode to the Mac backend with LiDAR streaming"
 	@echo "  make pi-keys         - Run keyboard-to-ESP serial bridge"
 	@echo "  make help   - Show this help message"
 
@@ -89,7 +90,7 @@ pi-connect-echo:
 		echo "Usage: make pi-connect-echo MAC_IP=192.168.1.25"; \
 		exit 1; \
 	fi
-	BACKEND_WS_BASE=ws://$(MAC_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
+	BACKEND_WS_BASE=ws://$(MAC_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
 
 pi-keys:
 	python3 pi/arrow_serial_bridge.py

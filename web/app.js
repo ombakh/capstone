@@ -305,6 +305,19 @@ function extractLatestLidarScan(events) {
   return null;
 }
 
+function extractLatestLidarStatus(events) {
+  if (!Array.isArray(events)) return null;
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isObject(event) || event.deviceId !== backend.deviceId) continue;
+    if (event.eventType !== "lidar.status") continue;
+    return event.payload;
+  }
+
+  return null;
+}
+
 function extractLatestPiTemperature(events) {
   if (!Array.isArray(events)) return null;
 
@@ -320,6 +333,11 @@ function extractLatestPiTemperature(events) {
 
 function applySerializableState(statePayload) {
   const latestEvents = statePayload?.recentEvents;
+  const lidarStatusPayload = extractLatestLidarStatus(latestEvents);
+  if (lidarStatusPayload) {
+    applyLidarStatus(lidarStatusPayload);
+  }
+
   const lidarPayload = extractLatestLidarScan(latestEvents);
   if (lidarPayload) {
     updateLidarScan(lidarPayload);

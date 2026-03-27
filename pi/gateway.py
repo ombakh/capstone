@@ -109,20 +109,24 @@ class Config:
 
     @staticmethod
     def from_env() -> "Config":
+        motor_echo = env_flag("PI_MOTOR_ECHO", default=True)
+        motor_echo_only = env_flag("PI_MOTOR_ECHO_ONLY", default=False)
+        lidar_default_port = "/dev/ttyUSB0" if motor_echo_only else "/dev/ttyUSB1"
+
         return Config(
             backend_ws_base=os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:3000"),
             device_id=os.getenv("PI_DEVICE_ID", "pi-01"),
             device_token=os.getenv("PI_DEVICE_TOKEN", ""),
             esp_serial_port=os.getenv("ESP_SERIAL_PORT", "/dev/ttyUSB0"),
             esp_baud=env_int("ESP_BAUD", 115200),
-            motor_echo=env_flag("PI_MOTOR_ECHO", default=True),
-            motor_echo_only=env_flag("PI_MOTOR_ECHO_ONLY", default=False),
+            motor_echo=motor_echo,
+            motor_echo_only=motor_echo_only,
             camera_left_index=env_int("CAMERA_LEFT_INDEX", 0),
             camera_right_index=env_int("CAMERA_RIGHT_INDEX", 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
             camera_publish_interval_sec=env_float("CAMERA_PUBLISH_SEC", 2.0),
             lidar_enabled=env_flag("LIDAR_ENABLED", default=True),
-            lidar_port=os.getenv("LIDAR_SERIAL_PORT", "/dev/ttyUSB1"),
+            lidar_port=os.getenv("LIDAR_SERIAL_PORT", lidar_default_port),
             lidar_max_distance_mm=env_int("LIDAR_MAX_DISTANCE_MM", 6000),
             lidar_min_distance_mm=env_int("LIDAR_MIN_DISTANCE_MM", 120),
             lidar_max_points=env_int("LIDAR_MAX_POINTS", 300),

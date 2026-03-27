@@ -71,6 +71,10 @@ make pi-connect-echo MAC_IP=<mac-ip>
 If you are on campus or guest Wi-Fi, use the Mac's Tailscale IP instead of its
 local Wi-Fi IP.
 
+`make pi-connect-echo` now carries LiDAR scans over the same backend path by
+default. Override the serial device with `PI_LIDAR_PORT=/dev/ttyUSB1` or disable
+streaming with `PI_LIDAR_ENABLED=0`.
+
 ### 4. Use the web app
 
 Open `http://127.0.0.1:8080` on the Mac and press the arrow keys.

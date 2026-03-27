@@ -95,7 +95,7 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_HEARTBEAT_SEC` default: `5`
 - `CAMERA_PUBLISH_SEC` default: `2`
 - `LIDAR_ENABLED` default: `1` (set `0` to disable streaming)
-- `LIDAR_SERIAL_PORT` default: `/dev/ttyUSB1`
+- `LIDAR_SERIAL_PORT` default: `/dev/ttyUSB0` in `PI_MOTOR_ECHO_ONLY=1` mode, otherwise `/dev/ttyUSB1`
 - `LIDAR_MAX_DISTANCE_MM` default: `6000`
 - `LIDAR_MIN_DISTANCE_MM` default: `120`
 - `LIDAR_MAX_POINTS` default: `300`

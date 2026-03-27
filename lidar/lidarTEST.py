@@ -1,3 +1,4 @@
+import os
 import sys
 import math
 import time
@@ -10,9 +11,9 @@ import pyqtgraph as pg
 
 
 # ================== AYARLAR ==================
-PORT = "/dev/ttyUSB0"
-MAX_DIST = 6000
-PLOT_UPDATE_MS = 50
+PORT = os.getenv("LIDAR_SERIAL_PORT", "/dev/ttyUSB0")
+MAX_DIST = int(os.getenv("LIDAR_MAX_DISTANCE_MM", "6000"))
+PLOT_UPDATE_MS = int(os.getenv("LIDAR_PLOT_UPDATE_MS", "50"))
 # ============================================
 
 
@@ -23,6 +24,9 @@ class LidarWorker(threading.Thread):
         self.lidar = lidar
         self.points = []
         self._stop_flag = False
+
+    def stop(self):
+        self._stop_flag = True
 
     def run(self):
         while not self._stop_flag:
