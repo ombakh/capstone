@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260325-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260327-1" />
 </head>
 <body>
   <main class="app">
@@ -17,6 +17,27 @@
           <div class="lidar-head">
             <span class="lidar-label">LiDAR</span>
             <span id="lidar-status" class="lidar-status">CONNECTING</span>
+          </div>
+        </div>
+
+        <div class="lidar-zoom" aria-label="LiDAR zoom controls">
+          <div class="lidar-zoom-head">
+            <span class="lidar-zoom-label">Zoom</span>
+            <span id="lidar-zoom-value" class="lidar-zoom-value">1.0x · 6000 mm</span>
+          </div>
+          <div class="lidar-zoom-row">
+            <button id="lidar-zoom-out" class="lidar-zoom-button" type="button" aria-label="Zoom out LiDAR view">−</button>
+            <input
+              id="lidar-zoom-slider"
+              class="lidar-zoom-slider"
+              type="range"
+              min="1"
+              max="5"
+              step="0.25"
+              value="1"
+              aria-label="LiDAR zoom level"
+            />
+            <button id="lidar-zoom-in" class="lidar-zoom-button" type="button" aria-label="Zoom in LiDAR view">+</button>
           </div>
         </div>
 
@@ -83,6 +104,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260325-1"></script>
+  <script src="./app.js?v=20260327-1"></script>
 </body>
 </html>

@@ -12,7 +12,11 @@ const elements = {
   piTemperature: document.getElementById("pi-temperature"),
   piLatency: document.getElementById("pi-latency"),
   lidarCanvas: document.getElementById("lidar-canvas"),
-  lidarStatus: document.getElementById("lidar-status")
+  lidarStatus: document.getElementById("lidar-status"),
+  lidarZoomOutBtn: document.getElementById("lidar-zoom-out"),
+  lidarZoomInBtn: document.getElementById("lidar-zoom-in"),
+  lidarZoomSlider: document.getElementById("lidar-zoom-slider"),
+  lidarZoomValue: document.getElementById("lidar-zoom-value")
 };
 
 const controlButtons = new Map(
@@ -26,6 +30,9 @@ const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
 const LIDAR_STALE_AFTER_MS = 2500;
 const LIDAR_SWEEP_SPEED = 0.0032;
+const LIDAR_ZOOM_MIN = 1;
+const LIDAR_ZOOM_MAX = 5;
+const LIDAR_ZOOM_STEP = 0.25;
 
 const DRIVE_KEY_TO_DIRECTION = {
   ArrowUp: "forward",
@@ -67,6 +74,7 @@ const lidarState = {
   ctx: elements.lidarCanvas ? elements.lidarCanvas.getContext("2d") : null,
   points: [],
   maxDistanceMm: 6000,
+  zoom: 1,
   lastScanAtMs: 0,
   staleAfterMs: LIDAR_STALE_AFTER_MS,
   staleStatusEnabled: true,
@@ -116,6 +124,41 @@ function setLidarStatus(text, mode = "warn") {
   elements.lidarStatus.textContent = text;
   elements.lidarStatus.classList.remove("live", "warn");
   elements.lidarStatus.classList.add(mode === "live" ? "live" : "warn");
+}
+
+function clampLidarZoom(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return lidarState.zoom;
+
+  const steppedValue = Math.round(numericValue / LIDAR_ZOOM_STEP) * LIDAR_ZOOM_STEP;
+  return Math.min(LIDAR_ZOOM_MAX, Math.max(LIDAR_ZOOM_MIN, steppedValue));
+}
+
+function getLidarViewDistanceMm() {
+  return Math.max(1, lidarState.maxDistanceMm / lidarState.zoom);
+}
+
+function renderLidarZoomUi() {
+  if (elements.lidarZoomSlider) {
+    elements.lidarZoomSlider.value = lidarState.zoom.toFixed(2);
+  }
+
+  if (elements.lidarZoomValue) {
+    elements.lidarZoomValue.textContent = `${lidarState.zoom.toFixed(1)}x · ${Math.round(getLidarViewDistanceMm())} mm`;
+  }
+
+  if (elements.lidarZoomOutBtn) {
+    elements.lidarZoomOutBtn.disabled = lidarState.zoom <= LIDAR_ZOOM_MIN;
+  }
+
+  if (elements.lidarZoomInBtn) {
+    elements.lidarZoomInBtn.disabled = lidarState.zoom >= LIDAR_ZOOM_MAX;
+  }
+}
+
+function setLidarZoom(nextZoom) {
+  lidarState.zoom = clampLidarZoom(nextZoom);
+  renderLidarZoomUi();
 }
 
 function formatTemperatureF(value) {
@@ -260,6 +303,7 @@ function updateLidarScan(payload) {
   const maxDistanceMm = Number(payload.maxDistanceMm);
   if (Number.isFinite(maxDistanceMm) && maxDistanceMm > 0) {
     lidarState.maxDistanceMm = maxDistanceMm;
+    renderLidarZoomUi();
   }
 
   setLidarStatus(`LIVE ${points.length} pts`, "live");
@@ -267,6 +311,12 @@ function updateLidarScan(payload) {
 
 function applyLidarStatus(payload) {
   if (!isObject(payload)) return;
+
+  const maxDistanceMm = Number(payload.maxDistanceMm);
+  if (Number.isFinite(maxDistanceMm) && maxDistanceMm > 0) {
+    lidarState.maxDistanceMm = maxDistanceMm;
+    renderLidarZoomUi();
+  }
 
   if (payload.connected === true) {
     lidarState.staleStatusEnabled = true;
@@ -502,11 +552,13 @@ function drawLidarFrame(timestampMs) {
     ctx.stroke();
   }
 
-  const maxDistance = Math.max(1, lidarState.maxDistanceMm);
+  const maxDistance = getLidarViewDistanceMm();
   const scanAgeMs = lidarState.lastScanAtMs ? Date.now() - lidarState.lastScanAtMs : Infinity;
   const freshness = scanAgeMs < lidarState.staleAfterMs ? 1 : 0.42;
 
   for (const [angleDeg, distanceMm] of lidarState.points) {
+    if (distanceMm > maxDistance) continue;
+
     const angleRad = ((angleDeg - 90) * Math.PI) / 180;
     const distanceRatio = Math.min(1, distanceMm / maxDistance);
     const pointRadius = distanceRatio * radius;
@@ -781,6 +833,18 @@ function closeSettingsIfClickedOutside(target) {
 }
 
 function setupEvents() {
+  elements.lidarZoomOutBtn?.addEventListener("click", () => {
+    setLidarZoom(lidarState.zoom - LIDAR_ZOOM_STEP);
+  });
+
+  elements.lidarZoomInBtn?.addEventListener("click", () => {
+    setLidarZoom(lidarState.zoom + LIDAR_ZOOM_STEP);
+  });
+
+  elements.lidarZoomSlider?.addEventListener("input", (event) => {
+    setLidarZoom(event.target.value);
+  });
+
   elements.switchCameraBtn.addEventListener("click", async () => {
     state.facingMode = getOppositeFacingMode(state.facingMode);
     await startCameraFeeds();
@@ -835,6 +899,7 @@ function boot() {
   setFullCameraView(false);
   setSecondaryCollapsed(false);
   setLidarStatus("CONNECTING", "warn");
+  setLidarZoom(lidarState.zoom);
   syncLidarCanvasSize();
 
   if (lidarState.ctx) {
