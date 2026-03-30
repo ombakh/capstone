@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import websockets
@@ -427,6 +427,93 @@ class LidarBridge:
                 "timestamp": timestamp,
             }
 
+    def _parse_measurement(self, measurement: Any) -> Optional[Tuple[Optional[bool], Tuple[int, float, float]]]:
+        if isinstance(measurement, dict):
+            new_scan = measurement.get("new_scan")
+            quality = measurement.get("quality", 0)
+            angle = measurement.get("angle")
+            distance = measurement.get("distance")
+        elif isinstance(measurement, (tuple, list)):
+            if len(measurement) >= 4:
+                new_scan = measurement[0]
+                quality = measurement[1]
+                angle = measurement[2]
+                distance = measurement[3]
+            elif len(measurement) >= 3:
+                new_scan = None
+                quality = measurement[0]
+                angle = measurement[1]
+                distance = measurement[2]
+            else:
+                return None
+        else:
+            new_scan = getattr(measurement, "new_scan", None)
+            quality = getattr(measurement, "quality", 0)
+            angle = getattr(measurement, "angle", None)
+            distance = getattr(measurement, "distance", None)
+
+        try:
+            parsed_quality = int(quality)
+            parsed_angle = float(angle) % 360.0
+            parsed_distance = float(distance)
+        except (TypeError, ValueError):
+            return None
+
+        if isinstance(new_scan, str):
+            parsed_new_scan: Optional[bool] = new_scan.strip().lower() in {"1", "true", "yes", "on"}
+        elif new_scan is None:
+            parsed_new_scan = None
+        else:
+            parsed_new_scan = bool(new_scan)
+
+        return parsed_new_scan, (parsed_quality, parsed_angle, parsed_distance)
+
+    def _iter_scans(
+        self,
+        lidar: Any,
+        max_buf_meas: int = 1200,
+        min_len: int = 5,
+    ) -> Iterator[List[Tuple[int, float, float]]]:
+        iter_measures = getattr(lidar, "iter_measures", None)
+        if not callable(iter_measures):
+            iter_scans = getattr(lidar, "iter_scans", None)
+            if not callable(iter_scans):
+                raise RuntimeError("LiDAR driver does not expose iter_measures() or iter_scans()")
+            try:
+                yield from iter_scans(max_buf_meas=max_buf_meas, min_len=min_len)
+            except TypeError:
+                yield from iter_scans()
+            return
+
+        try:
+            measurements = iter_measures(max_buf_meas=max_buf_meas)
+        except TypeError:
+            measurements = iter_measures()
+
+        scan: List[Tuple[int, float, float]] = []
+        last_angle: Optional[float] = None
+        for measurement in measurements:
+            parsed = self._parse_measurement(measurement)
+            if not parsed:
+                continue
+
+            new_scan, point = parsed
+            angle = point[1]
+            if new_scan is None and last_angle is not None:
+                new_scan = angle < last_angle
+
+            if new_scan:
+                if len(scan) > min_len:
+                    yield scan
+                scan = []
+
+            if point[2] > 0:
+                scan.append(point)
+            last_angle = angle
+
+        if len(scan) > min_len:
+            yield scan
+
     def _normalize_scan(self, scan: Any) -> Optional[JsonDict]:
         points = []
         for point in scan:
@@ -480,12 +567,11 @@ class LidarBridge:
             try:
                 lidar = RPLidar(self.port, timeout=1)
                 self._lidar = lidar
-                lidar.start_motor()
                 self._set_connected(True)
                 self._set_error("")
                 logging.info("LiDAR connected on %s", self.port)
 
-                for scan in lidar.iter_scans(max_buf_meas=1200):
+                for scan in self._iter_scans(lidar, max_buf_meas=1200):
                     if self._stop_event.is_set():
                         break
 

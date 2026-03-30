@@ -11,6 +11,7 @@ HOST_IP ?= $(or $(PC_IP),$(MAC_IP))
 PI_DEVICE_ID ?= pi-01
 PI_LIDAR_ENABLED ?= 1
 PI_LIDAR_PORT ?= /dev/ttyUSB0
+PI_VENV_DIR ?= .venv
 
 .PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pc-setup pc-backend pc-web pc-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-connect-echo pi-keys
 
@@ -99,6 +100,11 @@ pi-connect-echo:
 		echo "Usage: make pi-connect-echo PC_IP=192.168.1.25"; \
 		exit 1; \
 	fi
+	@if [ ! -f "$(PI_VENV_DIR)/bin/activate" ]; then \
+		echo "Missing $(PI_VENV_DIR)/bin/activate. Run: python3 -m venv $(PI_VENV_DIR) && make pi-setup"; \
+		exit 1; \
+	fi
+	@. "$(PI_VENV_DIR)/bin/activate"; \
 	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
 
 pi-keys:
