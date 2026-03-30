@@ -7,7 +7,7 @@ Pi telemetry, and optional ESP32 serial bridging.
 
 The most reliable development path in this repo is:
 
-- Mac: runs the backend and serves the web app
+- PC: runs the backend and serves the web app
 - Raspberry Pi: runs `pi/gateway.py`
 - Web app: sends arrow-key `drive` and `stop` commands
 - Pi gateway: receives commands over WebSocket and prints them in terminal echo mode
@@ -24,7 +24,7 @@ That flow is useful before adding motor hardware.
 
 ## Requirements
 
-Mac:
+PC:
 
 - `node` and `npm` (`backend/package.json` requires Node `>=18`)
 - `python3`
@@ -36,13 +36,13 @@ Pi:
 - `make`
 - a Python virtual environment is strongly recommended
 
-## Quick Start: Mac + Pi Echo Mode
+## Quick Start: PC + Pi Echo Mode
 
-### 1. Start the Mac side
+### 1. Start the PC side
 
 ```bash
-make mac-setup
-make mac-start
+make pc-setup
+make pc-start
 ```
 
 That runs:
@@ -60,15 +60,15 @@ source .venv/bin/activate
 make pi-setup
 ```
 
-### 3. Connect the Pi to the Mac backend
+### 3. Connect the Pi to the PC backend
 
 If both devices are on a network that allows peer-to-peer traffic:
 
 ```bash
-make pi-connect-echo MAC_IP=<mac-ip>
+make pi-connect-echo PC_IP=<pc-ip>
 ```
 
-If you are on campus or guest Wi-Fi, use the Mac's Tailscale IP instead of its
+If you are on campus or guest Wi-Fi, use the PC's Tailscale IP instead of its
 local Wi-Fi IP.
 
 `make pi-connect-echo` now carries LiDAR scans over the same backend path by
@@ -77,7 +77,7 @@ streaming with `PI_LIDAR_ENABLED=0`.
 
 ### 4. Use the web app
 
-Open `http://127.0.0.1:8080` on the Mac and press the arrow keys.
+Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
 
 Expected Pi output:
 
@@ -88,9 +88,9 @@ Motor command [echo-only] id=... stop
 
 ## Network Notes
 
-- The Pi must be able to reach the Mac backend on port `3000`.
+- The Pi must be able to reach the PC backend on port `3000`.
 - Many campus, guest, and enterprise Wi-Fi networks block device-to-device traffic.
-- If `curl http://<mac-ip>:3000/health` hangs from the Pi, use Tailscale or a different network.
+- If `curl http://<pc-ip>:3000/health` hangs from the Pi, use Tailscale or a different network.
 
 ## Useful Commands
 
@@ -100,15 +100,15 @@ Motor command [echo-only] id=... stop
 - `make backend-install`: install backend dependencies
 - `make backend-dev`: run backend in watch mode
 - `make backend-start`: run backend without watch mode
-- `make mac-setup`: install Mac-side backend dependencies
-- `make mac-backend`: run the backend on the Mac
-- `make mac-web`: serve the web app on the Mac
-- `make mac-start`: run backend and web app on the Mac
+- `make pc-setup`: install PC-side backend dependencies
+- `make pc-backend`: run the backend on the PC
+- `make pc-web`: serve the web app on the PC
+- `make pc-start`: run backend and web app on the PC
 - `make pi-install`: install Raspberry Pi gateway dependencies
 - `make pi-setup`: install Raspberry Pi gateway dependencies
 - `make pi-run`: run the Pi gateway with its default settings
 - `make pi-run-echo`: run the Pi gateway in local echo-only mode
-- `make pi-connect-echo MAC_IP=<ip>`: connect the Pi echo gateway to the Mac backend
+- `make pi-connect-echo PC_IP=<ip>`: connect the Pi echo gateway to the PC backend
 - `make pi-keys`: send direct arrow-key serial input to an attached ESP32
 - `make help`: list available targets
 

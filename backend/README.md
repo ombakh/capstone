@@ -55,7 +55,7 @@ Expected response shape:
 }
 ```
 
-When using a Mac-hosted backend with a Pi on another device, verify that the Pi
+When using a PC-hosted backend with a Pi on another device, verify that the Pi
 can reach this endpoint before debugging the WebSocket path.
 
 ## HTTP API
@@ -121,10 +121,10 @@ Message types:
 
 The currently documented development flow is:
 
-- Mac runs this backend on port `3000`
-- Mac serves the web app on port `8080`
+- PC runs this backend on port `3000`
+- PC serves the web app on port `8080`
 - Pi runs `pi/gateway.py`
-- Pi connects to the Mac over LAN or Tailscale
+- Pi connects to the PC over LAN or Tailscale
 
-If the Pi cannot reach the Mac on campus Wi-Fi, use a Tailscale IP or another
+If the Pi cannot reach the PC on campus Wi-Fi, use a Tailscale IP or another
 network that allows peer-to-peer traffic.

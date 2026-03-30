@@ -45,20 +45,20 @@ make pi-run-echo
 In that mode, incoming `drive` / `stop` commands are printed to the Pi terminal
 instead of being forwarded to an ESP32 serial device.
 
-To connect the Pi to a Mac-hosted backend:
+To connect the Pi to a PC-hosted backend:
 
 ```bash
-make pi-connect-echo MAC_IP=<mac-ip>
+make pi-connect-echo PC_IP=<pc-ip>
 ```
 
-If the local Wi-Fi blocks device-to-device traffic, use the Mac's Tailscale IP.
+If the local Wi-Fi blocks device-to-device traffic, use the PC's Tailscale IP.
 
 ## Verified Development Flow
 
-1. Start the backend and web app on the Mac with `make mac-start`.
+1. Start the backend and web app on the PC with `make pc-start`.
 2. Activate the Pi virtual environment.
-3. Run `make pi-connect-echo MAC_IP=<mac-ip-or-tailscale-ip>`.
-4. Press the web app arrow keys on the Mac.
+3. Run `make pi-connect-echo PC_IP=<pc-ip-or-tailscale-ip>`.
+4. Press the web app arrow keys on the PC.
 5. Watch the Pi terminal print the received motor commands.
 
 ## Direct Arrow-Key Control (Pi -> ESP32)

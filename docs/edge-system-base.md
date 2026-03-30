@@ -11,13 +11,13 @@
 
 Current tested setup:
 
-- Mac runs the backend and serves the web app
+- PC runs the backend and serves the web app
 - Raspberry Pi runs `pi/gateway.py`
-- Pi connects to the Mac backend over LAN or Tailscale
+- Pi connects to the PC backend over LAN or Tailscale
 - Web app arrow keys become `drive` / `stop` commands on the Pi
 
 If the Wi-Fi network blocks device-to-device traffic, the Pi will fail to reach
-the Mac backend directly. In that case, use Tailscale or a different network.
+the PC backend directly. In that case, use Tailscale or a different network.
 
 ## Primary Flows
 
