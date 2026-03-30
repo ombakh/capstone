@@ -32,7 +32,8 @@ const DEFAULT_DRIVE_SPEED = 0.55;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
 const LIDAR_STALE_AFTER_MS = 2500;
-const LIDAR_SWEEP_SPEED = 0.0032;
+const LIDAR_PULSE_CYCLE_MS = 4200;
+const LIDAR_PULSE_RING_COUNT = 3;
 const LIDAR_ZOOM_MIN = 1;
 const LIDAR_ZOOM_MAX = 5;
 const LIDAR_ZOOM_STEP = 0.25;
@@ -86,8 +87,6 @@ const lidarState = {
   lastScanAtMs: 0,
   staleAfterMs: LIDAR_STALE_AFTER_MS,
   staleStatusEnabled: true,
-  sweepAngleRad: 0,
-  lastRenderAtMs: 0,
   lastWidth: 0,
   lastHeight: 0,
   lastDevicePixelRatio: 0
@@ -594,31 +593,38 @@ function drawLidarFrame(timestampMs) {
   const centerX = width / 2;
   const centerY = height / 2;
   const radius = Math.min(width, height) * 0.47;
-
-  const elapsedMs = lidarState.lastRenderAtMs ? timestampMs - lidarState.lastRenderAtMs : 16;
-  lidarState.lastRenderAtMs = timestampMs;
-  lidarState.sweepAngleRad = (lidarState.sweepAngleRad + elapsedMs * LIDAR_SWEEP_SPEED) % (Math.PI * 2);
+  const pulseProgress = (timestampMs % LIDAR_PULSE_CYCLE_MS) / LIDAR_PULSE_CYCLE_MS;
+  const corePulse = 0.5 + 0.5 * Math.sin((timestampMs / LIDAR_PULSE_CYCLE_MS) * Math.PI * 2);
 
   ctx.clearRect(0, 0, width, height);
 
   const bg = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
-  bg.addColorStop(0, "rgba(9, 42, 73, 0.42)");
+  bg.addColorStop(0, "rgba(11, 40, 70, 0.46)");
+  bg.addColorStop(0.4, "rgba(7, 25, 45, 0.28)");
   bg.addColorStop(1, "rgba(5, 20, 40, 0.08)");
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
 
-  for (let trail = 0; trail < 7; trail += 1) {
-    const angle = lidarState.sweepAngleRad - trail * 0.07;
-    const alpha = Math.max(0.05, 0.58 - trail * 0.08);
-    const beamX = centerX + Math.cos(angle) * radius;
-    const beamY = centerY + Math.sin(angle) * radius;
-    ctx.strokeStyle = `rgba(161, 255, 208, ${alpha.toFixed(3)})`;
-    ctx.lineWidth = trail === 0 ? 2.4 : 1.3;
+  const pulseGlow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius * 0.62);
+  pulseGlow.addColorStop(0, `rgba(104, 160, 205, ${(0.08 + corePulse * 0.04).toFixed(3)})`);
+  pulseGlow.addColorStop(0.45, `rgba(70, 118, 165, ${(0.025 + corePulse * 0.02).toFixed(3)})`);
+  pulseGlow.addColorStop(1, "rgba(70, 118, 165, 0)");
+  ctx.fillStyle = pulseGlow;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  for (let ringIndex = 0; ringIndex < LIDAR_PULSE_RING_COUNT; ringIndex += 1) {
+    const phase = (pulseProgress + ringIndex / LIDAR_PULSE_RING_COUNT) % 1;
+    const ringRadius = Math.max(radius * 0.1, radius * phase);
+    const alpha = Math.pow(1 - phase, 1.55) * 0.14;
+    const lineWidth = 0.8 + Math.pow(1 - phase, 1.1) * 1.8;
+    ctx.strokeStyle = `rgba(114, 168, 212, ${alpha.toFixed(3)})`;
+    ctx.lineWidth = lineWidth;
     ctx.beginPath();
-    ctx.moveTo(centerX, centerY);
-    ctx.lineTo(beamX, beamY);
+    ctx.arc(centerX, centerY, ringRadius, 0, Math.PI * 2);
     ctx.stroke();
   }
+  ctx.restore();
 
   const maxDistance = getLidarViewDistanceMm();
   const scanAgeMs = lidarState.lastScanAtMs ? Date.now() - lidarState.lastScanAtMs : Infinity;
