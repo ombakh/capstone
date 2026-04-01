@@ -60,7 +60,8 @@ If the local Wi-Fi blocks device-to-device traffic, use the PC's Tailscale IP.
 
 With two camera modules attached, the web UI will show the live Pi feeds through
 the backend connection. The default mapping is camera index `0` for the left
-feed and camera index `1` for the right feed.
+feed and camera index `1` for the right feed. The web settings menu can adjust
+the live camera FPS at runtime across both feeds.
 
 ## Verified Development Flow
 

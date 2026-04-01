@@ -82,7 +82,9 @@ Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
 If two camera modules are attached to the Pi, the main view and side preview now
 render those live Pi feeds over the backend WebSocket path instead of using the
 browser's local webcam. By default, the gateway streams camera index `0` as the
-left feed and camera index `1` as the right feed.
+left feed and camera index `1` as the right feed. The frontend settings menu
+also exposes a camera FPS slider so you can raise or lower the live stream rate
+without restarting the Pi gateway.
 
 Expected Pi output:
 

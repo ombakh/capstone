@@ -9,6 +9,8 @@ const elements = {
   settingsBtn: document.getElementById("settings-button"),
   settingsMenu: document.getElementById("settings-menu"),
   fullCameraViewToggle: document.getElementById("full-camera-view-toggle"),
+  cameraFramerateSlider: document.getElementById("camera-framerate-slider"),
+  cameraFramerateValue: document.getElementById("camera-framerate-value"),
   lidarModeBtn: document.getElementById("lidar-mode-button"),
   piStatusPanel: document.getElementById("pi-status-panel"),
   piConnectionLabel: document.getElementById("pi-connection-label"),
@@ -32,6 +34,10 @@ const DEFAULT_DRIVE_SPEED = 0.55;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
 const CAMERA_NAMES = ["left", "right"];
+const CAMERA_STREAM_FPS_MIN = 1;
+const CAMERA_STREAM_FPS_MAX = 12;
+const CAMERA_STREAM_FPS_STEP = 1;
+const DEFAULT_CAMERA_STREAM_FPS = 6;
 const LIDAR_STALE_AFTER_MS = 2500;
 const LIDAR_PULSE_CYCLE_MS = 4200;
 const LIDAR_PULSE_RING_COUNT = 3;
@@ -69,6 +75,16 @@ const cameraState = {
     frameSrc: "",
     lastFrameAtMs: 0
   }
+};
+
+const cameraControlState = {
+  actualFps: DEFAULT_CAMERA_STREAM_FPS,
+  desiredFps: DEFAULT_CAMERA_STREAM_FPS,
+  minFps: CAMERA_STREAM_FPS_MIN,
+  maxFps: CAMERA_STREAM_FPS_MAX,
+  applying: false,
+  pendingCommandId: null,
+  pendingRequestedFps: null
 };
 
 const backend = {
@@ -136,6 +152,39 @@ function resolveBackendApiBaseUrl() {
 
 function resolveDeviceId() {
   return urlParams.get("deviceId") || DEFAULT_DEVICE_ID;
+}
+
+function clampNumber(value, fallback, minimum, maximum) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return fallback;
+  return Math.min(maximum, Math.max(minimum, numericValue));
+}
+
+function clampCameraStreamFps(value) {
+  const minFps = Number.isFinite(cameraControlState.minFps) ? cameraControlState.minFps : CAMERA_STREAM_FPS_MIN;
+  const maxFps = Number.isFinite(cameraControlState.maxFps) ? cameraControlState.maxFps : CAMERA_STREAM_FPS_MAX;
+  const steppedValue = Math.round(clampNumber(value, cameraControlState.actualFps, minFps, maxFps) / CAMERA_STREAM_FPS_STEP);
+  return Math.min(maxFps, Math.max(minFps, steppedValue * CAMERA_STREAM_FPS_STEP));
+}
+
+function formatCameraStreamFps(value, applying = false) {
+  const fps = clampCameraStreamFps(value);
+  return applying ? `${fps} FPS...` : `${fps} FPS`;
+}
+
+function renderCameraStreamControls() {
+  if (elements.cameraFramerateSlider) {
+    elements.cameraFramerateSlider.min = String(cameraControlState.minFps);
+    elements.cameraFramerateSlider.max = String(cameraControlState.maxFps);
+    elements.cameraFramerateSlider.step = String(CAMERA_STREAM_FPS_STEP);
+    elements.cameraFramerateSlider.value = String(clampCameraStreamFps(cameraControlState.desiredFps));
+    elements.cameraFramerateSlider.disabled = !deviceState.connected || cameraControlState.applying;
+  }
+
+  if (elements.cameraFramerateValue) {
+    const value = cameraControlState.applying ? cameraControlState.desiredFps : cameraControlState.actualFps;
+    elements.cameraFramerateValue.textContent = formatCameraStreamFps(value, cameraControlState.applying);
+  }
 }
 
 function isKnownCameraName(value) {
@@ -321,10 +370,14 @@ function setDeviceConnected(connected) {
     deviceState.temperatureF = null;
     deviceState.latencyMs = null;
     clearPendingLatencyState();
+    cameraControlState.applying = false;
+    cameraControlState.pendingCommandId = null;
+    cameraControlState.pendingRequestedFps = null;
   }
   syncLatencySampling();
   renderDeviceStatus();
   renderCameraFeeds();
+  renderCameraStreamControls();
 }
 
 function applyPiTemperature(payload) {
@@ -545,6 +598,20 @@ function extractLatestCameraStatus(events) {
 function applyCameraStatus(payload) {
   if (!isObject(payload)) return;
 
+  const reportedFps = clampCameraStreamFps(
+    payload.streamHz ?? payload.left?.fps ?? payload.right?.fps ?? cameraControlState.actualFps
+  );
+  const reportedMinFps = clampNumber(payload.minStreamHz, CAMERA_STREAM_FPS_MIN, CAMERA_STREAM_FPS_MIN, CAMERA_STREAM_FPS_MAX);
+  const reportedMaxFps = clampNumber(payload.maxStreamHz, CAMERA_STREAM_FPS_MAX, reportedMinFps, CAMERA_STREAM_FPS_MAX);
+
+  cameraControlState.minFps = reportedMinFps;
+  cameraControlState.maxFps = reportedMaxFps;
+  cameraControlState.actualFps = reportedFps;
+  cameraControlState.desiredFps = reportedFps;
+  cameraControlState.applying = false;
+  cameraControlState.pendingCommandId = null;
+  cameraControlState.pendingRequestedFps = null;
+
   CAMERA_NAMES.forEach((cameraName) => {
     if (!isObject(payload[cameraName])) return;
     const nextStatus = {
@@ -557,6 +624,7 @@ function applyCameraStatus(payload) {
   });
 
   renderCameraFeeds();
+  renderCameraStreamControls();
 }
 
 function applyCameraFrame(frame) {
@@ -654,17 +722,49 @@ function handlePiAckMessage(message) {
   if (message.deviceId !== backend.deviceId) return;
   setDeviceConnected(true);
 
-  const sentAt = latencyState.pendingByCommandId.get(message.ack?.commandId);
+  const ack = isObject(message.ack) ? message.ack : {};
+  const sentAt = latencyState.pendingByCommandId.get(ack.commandId);
   if (Number.isFinite(sentAt)) {
     deviceState.latencyMs = performance.now() - sentAt;
-    latencyState.pendingByCommandId.delete(message.ack.commandId);
+    latencyState.pendingByCommandId.delete(ack.commandId);
     renderDeviceStatus();
+  }
+
+  if (
+    ack.details?.command === "set_camera_stream_fps" &&
+    (!cameraControlState.pendingCommandId || ack.commandId === cameraControlState.pendingCommandId)
+  ) {
+    const appliedFps = clampCameraStreamFps(
+      ack.details?.appliedFps ?? cameraControlState.pendingRequestedFps ?? cameraControlState.actualFps
+    );
+
+    cameraControlState.applying = false;
+    cameraControlState.pendingCommandId = null;
+    cameraControlState.pendingRequestedFps = null;
+
+    if (ack.status === "camera_stream_fps_updated") {
+      cameraControlState.actualFps = appliedFps;
+      cameraControlState.desiredFps = appliedFps;
+      requestDeviceStatusSnapshot();
+    } else {
+      cameraControlState.desiredFps = cameraControlState.actualFps;
+    }
+
+    renderCameraStreamControls();
   }
 }
 
 function handleCommandAcceptedMessage(message) {
   const command = message.command;
   if (!isObject(command) || command.deviceId !== backend.deviceId) return;
+
+  if (command.command === "set_camera_stream_fps") {
+    const requestedFps = clampCameraStreamFps(command.params?.fps ?? cameraControlState.desiredFps);
+    cameraControlState.pendingCommandId = command.id;
+    cameraControlState.pendingRequestedFps = requestedFps;
+    return;
+  }
+
   if (command.command !== "ping") return;
 
   const clientNonce = command.params?.clientNonce;
@@ -918,6 +1018,42 @@ function requestDeviceStatusSnapshot() {
   });
 }
 
+function sendCameraStreamFpsCommand(nextFps) {
+  const requestedFps = clampCameraStreamFps(nextFps);
+  if (requestedFps === cameraControlState.actualFps) {
+    cameraControlState.desiredFps = requestedFps;
+    renderCameraStreamControls();
+    return;
+  }
+
+  const sent = sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command: "set_camera_stream_fps",
+      params: {
+        fps: requestedFps
+      }
+    }
+  });
+
+  if (!sent) {
+    cameraControlState.desiredFps = cameraControlState.actualFps;
+    cameraControlState.applying = false;
+    cameraControlState.pendingCommandId = null;
+    cameraControlState.pendingRequestedFps = null;
+    renderCameraStreamControls();
+    console.warn("Unable to update camera FPS: backend socket is not connected.");
+    return;
+  }
+
+  cameraControlState.desiredFps = requestedFps;
+  cameraControlState.applying = true;
+  cameraControlState.pendingCommandId = null;
+  cameraControlState.pendingRequestedFps = requestedFps;
+  renderCameraStreamControls();
+}
+
 function sendDriveCommand(command, params = {}) {
   const sent = sendBackendMessage({
     type: "ui:command",
@@ -1018,6 +1154,7 @@ function swapPrimaryCamera() {
 
 renderDeviceStatus();
 renderCameraFeeds();
+renderCameraStreamControls();
 
 function setPressed(key, pressed) {
   const button = controlButtons.get(key);
@@ -1077,6 +1214,15 @@ function setupEvents() {
 
   elements.lidarModeBtn.addEventListener("click", () => {
     toggleViewMode();
+  });
+
+  elements.cameraFramerateSlider?.addEventListener("input", (event) => {
+    cameraControlState.desiredFps = clampCameraStreamFps(event.target.value);
+    renderCameraStreamControls();
+  });
+
+  elements.cameraFramerateSlider?.addEventListener("change", (event) => {
+    sendCameraStreamFpsCommand(event.target.value);
   });
 
   elements.switchCameraBtn.addEventListener("click", () => {

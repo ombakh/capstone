@@ -231,10 +231,20 @@ class EspSerialBridge:
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
+CAMERA_STREAM_HZ_MIN = 1.0
+CAMERA_STREAM_HZ_MAX = 12.0
 
 
 def clamp_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
+
+
+def clamp_float(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def clamp_camera_stream_hz(value: float) -> float:
+    return clamp_float(value, CAMERA_STREAM_HZ_MIN, CAMERA_STREAM_HZ_MAX)
 
 
 def find_camera_stream_command() -> Tuple[str, ...]:
@@ -258,7 +268,7 @@ class CameraWorker:
         self.index = index
         self.frame_width = max(160, frame_width)
         self.frame_height = max(120, frame_height)
-        self.stream_hz = max(1.0, stream_hz)
+        self.stream_hz = clamp_camera_stream_hz(stream_hz)
         self.jpeg_quality = clamp_int(jpeg_quality, 20, 95)
         self.camera_commands = camera_commands
 
@@ -294,6 +304,10 @@ class CameraWorker:
         self._stop_process()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        self._thread = None
+
+    def set_stream_hz(self, stream_hz: float) -> None:
+        self.stream_hz = clamp_camera_stream_hz(stream_hz)
 
     def consume_latest(self, last_sequence: int) -> Optional[JsonDict]:
         with self._lock:
@@ -532,7 +546,6 @@ class CameraWorker:
     def _run_opencv_backend(self) -> None:
         assert cv2 is not None
 
-        frame_interval = 1.0 / self.stream_hz
         while not self._stop_event.is_set():
             capture = cv2.VideoCapture(self.index)
             if not capture.isOpened():
@@ -587,7 +600,7 @@ class CameraWorker:
                         height=int(height),
                     )
                     self._store_frame(encoded.tobytes(), int(width), int(height))
-                    time.sleep(frame_interval)
+                    time.sleep(1.0 / self.stream_hz)
             finally:
                 close_quietly(capture, "release")
 
@@ -602,7 +615,7 @@ class CameraManager:
         stream_hz: float,
         jpeg_quality: int,
     ) -> None:
-        self.stream_hz = max(1.0, stream_hz)
+        self.stream_hz = clamp_camera_stream_hz(stream_hz)
         camera_commands = find_camera_stream_command()
         self._workers = {
             "left": CameraWorker(
@@ -633,6 +646,21 @@ class CameraManager:
         for worker in self._workers.values():
             worker.start()
 
+    def set_stream_hz(self, stream_hz: float) -> float:
+        next_stream_hz = clamp_camera_stream_hz(stream_hz)
+        if abs(next_stream_hz - self.stream_hz) < 0.001:
+            return self.stream_hz
+
+        for worker in self._workers.values():
+            worker.stop()
+
+        self.stream_hz = next_stream_hz
+        for worker in self._workers.values():
+            worker.set_stream_hz(next_stream_hz)
+            worker.start()
+
+        return self.stream_hz
+
     def consume_latest(self, name: str, last_sequence: int) -> Optional[JsonDict]:
         worker = self._workers.get(name)
         if worker is None:
@@ -640,7 +668,12 @@ class CameraManager:
         return worker.consume_latest(last_sequence)
 
     def snapshot(self) -> JsonDict:
-        return {name: worker.status() for name, worker in self._workers.items()}
+        return {
+            "streamHz": round(self.stream_hz, 2),
+            "minStreamHz": CAMERA_STREAM_HZ_MIN,
+            "maxStreamHz": CAMERA_STREAM_HZ_MAX,
+            **{name: worker.status() for name, worker in self._workers.items()},
+        }
 
     def close(self) -> None:
         for worker in self._workers.values():
@@ -1038,7 +1071,7 @@ class PiGateway:
                     "motorEcho": self.config.motor_echo,
                     "motorEchoOnly": self.config.motor_echo_only,
                     "cameraIndexes": [self.config.camera_left_index, self.config.camera_right_index],
-                    "cameraStreamHz": self.config.camera_stream_hz,
+                    "cameraStreamHz": self.cameras.stream_hz,
                     "cameraFrameSize": [self.config.camera_frame_width, self.config.camera_frame_height],
                     "lidar": self.lidar.status(),
                 },
@@ -1191,6 +1224,39 @@ class PiGateway:
             await self._send_ack(ws, command_id=command_id, status="camera_status_sent")
             return
 
+        if command_name == "set_camera_stream_fps":
+            requested_fps = params.get("fps")
+            try:
+                parsed_fps = float(requested_fps)
+            except (TypeError, ValueError):
+                await self._send_ack(
+                    ws,
+                    command_id=command_id,
+                    status="invalid_camera_stream_fps",
+                    details={"command": command_name, "fps": requested_fps},
+                )
+                return
+
+            applied_fps = await asyncio.to_thread(self.cameras.set_stream_hz, parsed_fps)
+            snapshot = self.cameras.snapshot()
+            await self._send_event(
+                ws,
+                event_type="camera.status",
+                payload=snapshot,
+                metadata={"source": "command"},
+            )
+            await self._send_ack(
+                ws,
+                command_id=command_id,
+                status="camera_stream_fps_updated",
+                details={
+                    "command": command_name,
+                    "requestedFps": parsed_fps,
+                    "appliedFps": applied_fps,
+                },
+            )
+            return
+
         if command_name == "lidar_status":
             await self._send_event(
                 ws,
@@ -1298,10 +1364,10 @@ class PiGateway:
             )
 
     async def _camera_frame_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
-        interval_sec = max(0.05, 1.0 / max(1.0, self.config.camera_stream_hz))
         last_sequences = {name: 0 for name in self.cameras.names}
 
         while True:
+            interval_sec = max(0.05, 1.0 / max(1.0, self.cameras.stream_hz))
             await asyncio.sleep(interval_sec)
             for name in self.cameras.names:
                 frame = self.cameras.consume_latest(name, last_sequences.get(name, 0))

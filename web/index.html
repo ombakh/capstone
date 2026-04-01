@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260401-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260401-2" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -91,6 +91,23 @@
             <input id="full-camera-view-toggle" type="checkbox" />
             <span>Full camera view</span>
           </label>
+
+          <div class="settings-group">
+            <div class="settings-group-head">
+              <label class="settings-group-label" for="camera-framerate-slider">Camera FPS</label>
+              <span id="camera-framerate-value" class="settings-group-value">6 FPS</span>
+            </div>
+            <input
+              id="camera-framerate-slider"
+              class="settings-slider"
+              type="range"
+              min="1"
+              max="12"
+              step="1"
+              value="6"
+              aria-label="Camera stream frame rate"
+            />
+          </div>
         </div>
 
         <button
@@ -121,6 +138,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260401-1"></script>
+  <script src="./app.js?v=20260401-2"></script>
 </body>
 </html>
