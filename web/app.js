@@ -3,6 +3,8 @@ const elements = {
   video: document.getElementById("camera-feed"),
   primaryMiniVideo: document.getElementById("primary-mini-feed"),
   secondaryVideo: document.getElementById("secondary-feed"),
+  primaryCameraLabel: document.getElementById("primary-camera-label"),
+  secondaryCameraLabel: document.getElementById("secondary-camera-label"),
   secondaryFeedShell: document.getElementById("secondary-feed-shell"),
   secondaryToggleBtn: document.getElementById("secondary-toggle"),
   switchCameraBtn: document.getElementById("switch-camera"),
@@ -33,7 +35,7 @@ const DEFAULT_BACKEND_PORT = "3000";
 const DEFAULT_DRIVE_SPEED = 0.55;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
-const CAMERA_NAMES = ["left", "right"];
+const CAMERA_NAMES = ["front", "back"];
 const CAMERA_STREAM_FPS_MIN = 1;
 const CAMERA_STREAM_FPS_MAX = 12;
 const CAMERA_STREAM_FPS_STEP = 1;
@@ -59,18 +61,18 @@ const DRIVE_KEY_TO_DIRECTION = {
 const urlParams = new URLSearchParams(window.location.search);
 
 const state = {
-  primaryCameraName: "left",
+  primaryCameraName: "front",
   secondaryCollapsed: false,
   viewMode: "camera"
 };
 
 const cameraState = {
-  left: {
+  front: {
     status: null,
     frameSrc: "",
     lastFrameAtMs: 0
   },
-  right: {
+  back: {
     status: null,
     frameSrc: "",
     lastFrameAtMs: 0
@@ -191,16 +193,40 @@ function isKnownCameraName(value) {
   return CAMERA_NAMES.includes(value);
 }
 
+function normalizeCameraName(value) {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  if (normalizedValue === "left") return "front";
+  if (normalizedValue === "right") return "back";
+  return normalizedValue;
+}
+
+function getCameraPayloadEntry(payload, cameraName) {
+  if (!isObject(payload)) return null;
+  if (isObject(payload[cameraName])) return payload[cameraName];
+  if (cameraName === "front" && isObject(payload.left)) return payload.left;
+  if (cameraName === "back" && isObject(payload.right)) return payload.right;
+  return null;
+}
+
+function formatCameraName(cameraName) {
+  const normalizedCameraName = normalizeCameraName(cameraName);
+  if (normalizedCameraName === "front") return "Front";
+  if (normalizedCameraName === "back") return "Back";
+  return "Camera";
+}
+
 function getCameraState(name) {
-  return isKnownCameraName(name) ? cameraState[name] : null;
+  const normalizedName = normalizeCameraName(name);
+  return isKnownCameraName(normalizedName) ? cameraState[normalizedName] : null;
 }
 
 function getPrimaryCameraName() {
-  return isKnownCameraName(state.primaryCameraName) ? state.primaryCameraName : "left";
+  const normalizedName = normalizeCameraName(state.primaryCameraName);
+  return isKnownCameraName(normalizedName) ? normalizedName : "front";
 }
 
 function getSecondaryCameraName() {
-  return getPrimaryCameraName() === "left" ? "right" : "left";
+  return getPrimaryCameraName() === "front" ? "back" : "front";
 }
 
 function getCameraStatus(name) {
@@ -250,6 +276,14 @@ function renderCameraFeeds() {
   setImageSource(elements.video, primaryFeed?.frameSrc || "");
   setImageSource(elements.primaryMiniVideo, primaryFeed?.frameSrc || "");
   setImageSource(elements.secondaryVideo, secondaryFeed?.frameSrc || "");
+
+  if (elements.primaryCameraLabel) {
+    elements.primaryCameraLabel.textContent = formatCameraName(primaryCameraName);
+  }
+
+  if (elements.secondaryCameraLabel) {
+    elements.secondaryCameraLabel.textContent = formatCameraName(secondaryCameraName);
+  }
 
   setSecondaryUnavailable(!cameraHasRenderableFeed(secondaryCameraName));
   elements.switchCameraBtn.disabled = !cameraHasRenderableFeed(secondaryCameraName);
@@ -599,7 +633,7 @@ function applyCameraStatus(payload) {
   if (!isObject(payload)) return;
 
   const reportedFps = clampCameraStreamFps(
-    payload.streamHz ?? payload.left?.fps ?? payload.right?.fps ?? cameraControlState.actualFps
+    payload.streamHz ?? payload.front?.fps ?? payload.back?.fps ?? payload.left?.fps ?? payload.right?.fps ?? cameraControlState.actualFps
   );
   const reportedMinFps = clampNumber(payload.minStreamHz, CAMERA_STREAM_FPS_MIN, CAMERA_STREAM_FPS_MIN, CAMERA_STREAM_FPS_MAX);
   const reportedMaxFps = clampNumber(payload.maxStreamHz, CAMERA_STREAM_FPS_MAX, reportedMinFps, CAMERA_STREAM_FPS_MAX);
@@ -613,9 +647,10 @@ function applyCameraStatus(payload) {
   cameraControlState.pendingRequestedFps = null;
 
   CAMERA_NAMES.forEach((cameraName) => {
-    if (!isObject(payload[cameraName])) return;
+    const payloadEntry = getCameraPayloadEntry(payload, cameraName);
+    if (!isObject(payloadEntry)) return;
     const nextStatus = {
-      ...payload[cameraName],
+      ...payloadEntry,
       name: cameraName
     };
     const feed = getCameraState(cameraName);
@@ -630,7 +665,7 @@ function applyCameraStatus(payload) {
 function applyCameraFrame(frame) {
   if (!isObject(frame)) return;
 
-  const cameraName = String(frame.cameraName || "").trim();
+  const cameraName = normalizeCameraName(frame.cameraName);
   const feed = getCameraState(cameraName);
   if (!feed) return;
 

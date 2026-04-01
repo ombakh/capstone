@@ -59,8 +59,8 @@ make pi-connect-echo PC_IP=<pc-ip>
 If the local Wi-Fi blocks device-to-device traffic, use the PC's Tailscale IP.
 
 With two camera modules attached, the web UI will show the live Pi feeds through
-the backend connection. The default mapping is camera index `0` for the left
-feed and camera index `1` for the right feed. The web settings menu can adjust
+the backend connection. The default mapping is camera index `0` for the front
+feed and camera index `1` for the back feed. The web settings menu can adjust
 the live camera FPS at runtime across both feeds.
 
 ## Verified Development Flow
@@ -100,8 +100,9 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `ESP_BAUD` default: `115200`
 - `PI_MOTOR_ECHO` default: `1` (log incoming motor commands to the Pi terminal)
 - `PI_MOTOR_ECHO_ONLY` default: `0` (set `1` to skip ESP serial and only print commands)
-- `CAMERA_LEFT_INDEX` default: `0`
-- `CAMERA_RIGHT_INDEX` default: `1`
+- `CAMERA_FRONT_INDEX` default: `0`
+- `CAMERA_BACK_INDEX` default: `1`
+- `CAMERA_LEFT_INDEX` / `CAMERA_RIGHT_INDEX`: legacy fallback env vars still accepted
 - `PI_HEARTBEAT_SEC` default: `5`
 - `CAMERA_PUBLISH_SEC` default: `2`
 - `CAMERA_STREAM_HZ` default: `6`

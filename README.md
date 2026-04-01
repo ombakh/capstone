@@ -33,9 +33,9 @@ code in this repository today.
   primary onboard computer that runs the edge gateway, owns the sensors, and
   connects back to the control backend over LAN or Tailscale.
 - Two Raspberry Pi NOIR camera modules:
-  attached to the Pi camera connectors and treated as the left and right robot
-  cameras. The current default mapping is camera index `0` for the left feed and
-  camera index `1` for the right feed.
+  attached to the Pi camera connectors and treated as the front and back robot
+  cameras. The current default mapping is camera index `0` for the front feed and
+  camera index `1` for the back feed.
 - LiDAR sensor:
   connected over USB serial and streamed by the Pi as `lidar.scan` events for
   the frontend map view.
@@ -151,7 +151,7 @@ Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
 If two camera modules are attached to the Pi, the main view and side preview now
 render those live Pi feeds over the backend WebSocket path instead of using the
 browser's local webcam. By default, the gateway streams camera index `0` as the
-left feed and camera index `1` as the right feed. The frontend settings menu
+front feed and camera index `1` as the back feed. The frontend settings menu
 also exposes a camera FPS slider so you can raise or lower the live stream rate
 without restarting the Pi gateway.
 

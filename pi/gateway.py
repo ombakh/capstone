@@ -72,6 +72,15 @@ def env_float(name: str, default: float) -> float:
     return float(os.getenv(name, str(default)))
 
 
+def env_int_any(names: Tuple[str, ...], default: int) -> int:
+    for name in names:
+        raw = os.getenv(name)
+        if raw is None:
+            continue
+        return int(raw)
+    return default
+
+
 def close_quietly(resource: Any, method_name: str) -> None:
     method = getattr(resource, method_name, None)
     if callable(method):
@@ -90,8 +99,8 @@ class Config:
     esp_baud: int
     motor_echo: bool
     motor_echo_only: bool
-    camera_left_index: int
-    camera_right_index: int
+    camera_front_index: int
+    camera_back_index: int
     heartbeat_interval_sec: float
     camera_publish_interval_sec: float
     camera_stream_hz: float
@@ -128,8 +137,8 @@ class Config:
             esp_baud=env_int("ESP_BAUD", 115200),
             motor_echo=motor_echo,
             motor_echo_only=motor_echo_only,
-            camera_left_index=env_int("CAMERA_LEFT_INDEX", 0),
-            camera_right_index=env_int("CAMERA_RIGHT_INDEX", 1),
+            camera_front_index=env_int_any(("CAMERA_FRONT_INDEX", "CAMERA_LEFT_INDEX"), 0),
+            camera_back_index=env_int_any(("CAMERA_BACK_INDEX", "CAMERA_RIGHT_INDEX"), 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
             camera_publish_interval_sec=env_float("CAMERA_PUBLISH_SEC", 2.0),
             camera_stream_hz=env_float("CAMERA_STREAM_HZ", 6.0),
@@ -608,8 +617,8 @@ class CameraWorker:
 class CameraManager:
     def __init__(
         self,
-        left_index: int,
-        right_index: int,
+        front_index: int,
+        back_index: int,
         frame_width: int,
         frame_height: int,
         stream_hz: float,
@@ -618,18 +627,18 @@ class CameraManager:
         self.stream_hz = clamp_camera_stream_hz(stream_hz)
         camera_commands = find_camera_stream_command()
         self._workers = {
-            "left": CameraWorker(
-                name="left",
-                index=left_index,
+            "front": CameraWorker(
+                name="front",
+                index=front_index,
                 frame_width=frame_width,
                 frame_height=frame_height,
                 stream_hz=self.stream_hz,
                 jpeg_quality=jpeg_quality,
                 camera_commands=camera_commands,
             ),
-            "right": CameraWorker(
-                name="right",
-                index=right_index,
+            "back": CameraWorker(
+                name="back",
+                index=back_index,
                 frame_width=frame_width,
                 frame_height=frame_height,
                 stream_hz=self.stream_hz,
@@ -999,8 +1008,8 @@ class PiGateway:
         self.config = config
         self.esp = EspSerialBridge(config.esp_serial_port, config.esp_baud)
         self.cameras = CameraManager(
-            left_index=config.camera_left_index,
-            right_index=config.camera_right_index,
+            front_index=config.camera_front_index,
+            back_index=config.camera_back_index,
             frame_width=config.camera_frame_width,
             frame_height=config.camera_frame_height,
             stream_hz=config.camera_stream_hz,
@@ -1070,7 +1079,7 @@ class PiGateway:
                     "espSerialPort": self.config.esp_serial_port,
                     "motorEcho": self.config.motor_echo,
                     "motorEchoOnly": self.config.motor_echo_only,
-                    "cameraIndexes": [self.config.camera_left_index, self.config.camera_right_index],
+                    "cameraIndexes": [self.config.camera_front_index, self.config.camera_back_index],
                     "cameraStreamHz": self.cameras.stream_hz,
                     "cameraFrameSize": [self.config.camera_frame_width, self.config.camera_frame_height],
                     "lidar": self.lidar.status(),

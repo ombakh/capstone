@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260401-2" />
+  <link rel="stylesheet" href="./styles.css?v=20260401-3" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -41,16 +41,16 @@
           </div>
         </div>
 
-        <div class="camera-rail" aria-label="Camera previews">
+        <div class="camera-rail" aria-label="Front and back camera previews">
           <div id="primary-mini-feed-shell" class="primary-mini-feed-shell camera-panel" aria-label="Primary camera preview">
-            <span class="camera-panel-label">Primary</span>
-            <img id="primary-mini-feed" class="secondary-feed" alt="Primary camera preview" />
+            <span id="primary-camera-label" class="camera-panel-label">Front</span>
+            <img id="primary-mini-feed" class="secondary-feed" alt="Primary robot camera preview" />
           </div>
 
           <div id="secondary-feed-shell" class="secondary-feed-shell camera-panel" aria-label="Secondary camera feed">
-            <span class="camera-panel-label">Secondary</span>
-            <img id="secondary-feed" class="secondary-feed" alt="Secondary camera feed" />
-            <button id="switch-camera" class="switch-camera" type="button" aria-label="Swap primary and secondary Pi camera feeds">
+            <span id="secondary-camera-label" class="camera-panel-label">Back</span>
+            <img id="secondary-feed" class="secondary-feed" alt="Secondary robot camera feed" />
+            <button id="switch-camera" class="switch-camera" type="button" aria-label="Swap front and back Pi camera feeds">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M17 8a5 5 0 0 0-8.5-3.5" />
                 <path d="M7 8V5h3" />
@@ -138,6 +138,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260401-2"></script>
+  <script src="./app.js?v=20260401-3"></script>
 </body>
 </html>
