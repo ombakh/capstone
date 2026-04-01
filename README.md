@@ -22,6 +22,75 @@ That flow is useful before adding motor hardware.
 - `esp/`: optional ESP32 serial-controlled motor/LED firmware
 - `docs/`: architecture and protocol notes
 
+## Technical Description: Current Robot Stack
+
+This section describes what the robot currently consists of according to the
+code in this repository today.
+
+### Onboard Hardware
+
+- Raspberry Pi 5:
+  primary onboard computer that runs the edge gateway, owns the sensors, and
+  connects back to the control backend over LAN or Tailscale.
+- Two Raspberry Pi NOIR camera modules:
+  attached to the Pi camera connectors and treated as the left and right robot
+  cameras. The current default mapping is camera index `0` for the left feed and
+  camera index `1` for the right feed.
+- LiDAR sensor:
+  connected over USB serial and streamed by the Pi as `lidar.scan` events for
+  the frontend map view.
+- Optional ESP32:
+  connected over USB serial when you want a separate microcontroller handling
+  low-level command reception from the Pi.
+
+### Onboard Software
+
+- `pi/gateway.py`:
+  the main robot-side process. It connects to the backend as the robot device,
+  publishes Pi temperature, camera status, live camera frames, and LiDAR data,
+  and forwards drive commands either to terminal echo mode or to the ESP32.
+- Raspberry Pi camera stack:
+  the preferred live-camera path uses `rpicam-vid` or `libcamera-vid`; OpenCV is
+  only a fallback when those tools are unavailable.
+- Python dependencies:
+  the Pi gateway currently depends on `websockets`, `pyserial`, and
+  `rplidar-roboticia`, with `python3-opencv` optional for the fallback camera
+  path.
+- Serial links:
+  the Pi can maintain one USB serial path to the LiDAR and another to the ESP32,
+  depending on whether the robot is in echo-only mode or using the optional ESP
+  controller.
+
+### Low-Level Control Status
+
+- The robot control path already exists end to end:
+  web UI -> backend -> Pi gateway -> optional ESP32.
+- The ESP32 firmware in this repo is still a placeholder:
+  it accepts `drive` and `stop` commands and maps them to LED behavior for
+  testing, but it does not yet drive physical motors.
+- Because of that, the currently proven configuration is still Pi echo mode:
+  arrow-key commands arrive on the Pi and are logged locally while cameras and
+  LiDAR continue streaming.
+
+### Off-Robot Infrastructure
+
+- Backend server:
+  currently runs on a separate PC and acts as the command broker and realtime
+  fan-out service for UI clients and the Pi.
+- Web frontend:
+  currently served from the PC, shows the robot camera feeds and LiDAR view, and
+  sends drive commands to the robot.
+- Network dependency:
+  the Pi must be able to reach the backend on port `3000`; the documented setup
+  uses either the local network or Tailscale.
+
+### Practical Summary
+
+What is effectively in the robot today is a Raspberry Pi 5 with two NOIR
+cameras, a LiDAR connected to the Pi, and an optional ESP32 serial companion.
+What is not yet fully onboard in this repo is the backend/web hosting layer and
+the final physical motor-driver implementation.
+
 ## Requirements
 
 PC:
