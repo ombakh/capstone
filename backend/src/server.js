@@ -40,7 +40,8 @@ const state = {
   startedAt: new Date().toISOString(),
   recentEvents: [],
   devices: new Map(),
-  commandQueues: new Map()
+  commandQueues: new Map(),
+  cameraFrames: new Map()
 };
 
 const uiClients = new Set();
@@ -155,6 +156,38 @@ function normalizeUiCommand(input) {
   };
 }
 
+function normalizeCameraFrame(input, fallbackDeviceId = "") {
+  ensureObject(input, "camera frame");
+
+  const deviceId = String(input.deviceId || fallbackDeviceId || "").trim();
+  const cameraName = String(input.cameraName || input.name || "").trim();
+  const mimeType = String(input.mimeType || "image/jpeg").trim() || "image/jpeg";
+  const jpegBase64 = String(input.jpegBase64 || "").trim();
+  const width = Number(input.width);
+  const height = Number(input.height);
+
+  if (!deviceId) {
+    throw new Error("frame.deviceId is required");
+  }
+  if (!cameraName) {
+    throw new Error("frame.cameraName is required");
+  }
+  if (!jpegBase64) {
+    throw new Error("frame.jpegBase64 is required");
+  }
+
+  return {
+    deviceId,
+    cameraName,
+    mimeType,
+    jpegBase64,
+    width: Number.isFinite(width) && width > 0 ? Math.round(width) : null,
+    height: Number.isFinite(height) && height > 0 ? Math.round(height) : null,
+    capturedAt: typeof input.capturedAt === "string" ? input.capturedAt : nowIso(),
+    sequence: Number.isFinite(Number(input.sequence)) ? Math.max(0, Math.floor(Number(input.sequence))) : 0
+  };
+}
+
 function clampNumber(value, fallback, min, max) {
   let nextValue = Number(value ?? fallback);
   if (!Number.isFinite(nextValue)) nextValue = fallback;
@@ -225,6 +258,20 @@ function queueCommand(command) {
 function broadcastToUi(message) {
   for (const socket of uiClients) {
     safeJsonSend(socket, message);
+  }
+}
+
+function cacheCameraFrame(frame) {
+  const deviceFrames = state.cameraFrames.get(frame.deviceId) || new Map();
+  deviceFrames.set(frame.cameraName, frame);
+  state.cameraFrames.set(frame.deviceId, deviceFrames);
+}
+
+function sendCachedCameraFrames(socket) {
+  for (const deviceFrames of state.cameraFrames.values()) {
+    for (const frame of deviceFrames.values()) {
+      safeJsonSend(socket, { type: "camera:frame", frame });
+    }
   }
 }
 
@@ -392,6 +439,7 @@ function sendSnapshot(socket) {
     type: "snapshot",
     state: serializableState()
   });
+  sendCachedCameraFrames(socket);
 }
 
 function registerPiSocket(socket, deviceId) {
@@ -437,6 +485,17 @@ function handlePiSocketMessage(deviceId, message) {
       handlePiEvent(event, "ws");
     } catch {
       // Invalid event payload is ignored on WS path.
+    }
+    return;
+  }
+
+  if (message.type === "pi:camera_frame") {
+    try {
+      const frame = normalizeCameraFrame(message.frame || {}, deviceId);
+      cacheCameraFrame(frame);
+      broadcastToUi({ type: "camera:frame", frame });
+    } catch {
+      // Invalid live camera frame payload is ignored on WS path.
     }
     return;
   }

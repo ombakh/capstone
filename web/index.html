@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260330-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260401-1" />
 </head>
 <body>
   <main id="app-root" class="app">
-    <video id="camera-feed" class="camera-feed" autoplay playsinline muted></video>
+    <img id="camera-feed" class="camera-feed" alt="Primary Raspberry Pi camera feed" />
     <div class="overlay">
       <div class="lidar-side">
         <div class="lidar-map" aria-label="Live LiDAR map">
@@ -44,13 +44,13 @@
         <div class="camera-rail" aria-label="Camera previews">
           <div id="primary-mini-feed-shell" class="primary-mini-feed-shell camera-panel" aria-label="Primary camera preview">
             <span class="camera-panel-label">Primary</span>
-            <video id="primary-mini-feed" class="secondary-feed" autoplay playsinline muted></video>
+            <img id="primary-mini-feed" class="secondary-feed" alt="Primary camera preview" />
           </div>
 
           <div id="secondary-feed-shell" class="secondary-feed-shell camera-panel" aria-label="Secondary camera feed">
             <span class="camera-panel-label">Secondary</span>
-            <video id="secondary-feed" class="secondary-feed" autoplay playsinline muted></video>
-            <button id="switch-camera" class="switch-camera" type="button" aria-label="Switch camera">
+            <img id="secondary-feed" class="secondary-feed" alt="Secondary camera feed" />
+            <button id="switch-camera" class="switch-camera" type="button" aria-label="Swap primary and secondary Pi camera feeds">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M17 8a5 5 0 0 0-8.5-3.5" />
                 <path d="M7 8V5h3" />
@@ -121,6 +121,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260330-1"></script>
+  <script src="./app.js?v=20260401-1"></script>
 </body>
 </html>

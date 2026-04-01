@@ -10,6 +10,7 @@ Responsibilities:
 - Optionally forward drive/motor commands to ESP32 over serial.
 - Publish ESP32 telemetry to backend as Pi events.
 - Publish status for two attached cameras.
+- Stream live JPEG frames for both configured Pi cameras to the frontend.
 - Stream live LiDAR scans (`lidar.scan`) to backend for web rendering.
 
 ## Install
@@ -22,7 +23,11 @@ source .venv/bin/activate
 make pi-setup
 ```
 
-Optional for camera probing:
+The preferred camera path uses `rpicam-vid` or `libcamera-vid`, which are part
+of the Raspberry Pi camera stack. OpenCV remains a fallback path when those
+commands are unavailable.
+
+Optional for the OpenCV fallback:
 
 ```bash
 sudo apt-get install -y python3-opencv
@@ -52,6 +57,10 @@ make pi-connect-echo PC_IP=<pc-ip>
 ```
 
 If the local Wi-Fi blocks device-to-device traffic, use the PC's Tailscale IP.
+
+With two camera modules attached, the web UI will show the live Pi feeds through
+the backend connection. The default mapping is camera index `0` for the left
+feed and camera index `1` for the right feed.
 
 ## Verified Development Flow
 
@@ -94,6 +103,10 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `CAMERA_RIGHT_INDEX` default: `1`
 - `PI_HEARTBEAT_SEC` default: `5`
 - `CAMERA_PUBLISH_SEC` default: `2`
+- `CAMERA_STREAM_HZ` default: `6`
+- `CAMERA_FRAME_WIDTH` default: `960`
+- `CAMERA_FRAME_HEIGHT` default: `720`
+- `CAMERA_JPEG_QUALITY` default: `60`
 - `LIDAR_ENABLED` default: `1` (set `0` to disable streaming)
 - `LIDAR_SERIAL_PORT` default: `/dev/ttyUSB0` in `PI_MOTOR_ECHO_ONLY=1` mode, otherwise `/dev/ttyUSB1`
 - `LIDAR_MAX_DISTANCE_MM` default: `6000`

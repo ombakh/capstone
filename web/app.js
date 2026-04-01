@@ -31,6 +31,7 @@ const DEFAULT_BACKEND_PORT = "3000";
 const DEFAULT_DRIVE_SPEED = 0.55;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
+const CAMERA_NAMES = ["left", "right"];
 const LIDAR_STALE_AFTER_MS = 2500;
 const LIDAR_PULSE_CYCLE_MS = 4200;
 const LIDAR_PULSE_RING_COUNT = 3;
@@ -52,11 +53,22 @@ const DRIVE_KEY_TO_DIRECTION = {
 const urlParams = new URLSearchParams(window.location.search);
 
 const state = {
-  facingMode: "user",
-  primaryStream: null,
-  secondaryStream: null,
+  primaryCameraName: "left",
   secondaryCollapsed: false,
   viewMode: "camera"
+};
+
+const cameraState = {
+  left: {
+    status: null,
+    frameSrc: "",
+    lastFrameAtMs: 0
+  },
+  right: {
+    status: null,
+    frameSrc: "",
+    lastFrameAtMs: 0
+  }
 };
 
 const backend = {
@@ -124,6 +136,74 @@ function resolveBackendApiBaseUrl() {
 
 function resolveDeviceId() {
   return urlParams.get("deviceId") || DEFAULT_DEVICE_ID;
+}
+
+function isKnownCameraName(value) {
+  return CAMERA_NAMES.includes(value);
+}
+
+function getCameraState(name) {
+  return isKnownCameraName(name) ? cameraState[name] : null;
+}
+
+function getPrimaryCameraName() {
+  return isKnownCameraName(state.primaryCameraName) ? state.primaryCameraName : "left";
+}
+
+function getSecondaryCameraName() {
+  return getPrimaryCameraName() === "left" ? "right" : "left";
+}
+
+function getCameraStatus(name) {
+  return getCameraState(name)?.status || null;
+}
+
+function setImageSource(element, nextSrc) {
+  if (!element) return;
+  const currentSrc = element.getAttribute("src") || "";
+  if (currentSrc === nextSrc) return;
+
+  if (nextSrc) {
+    element.setAttribute("src", nextSrc);
+    return;
+  }
+
+  element.removeAttribute("src");
+}
+
+function cameraHasRenderableFeed(name) {
+  const feed = getCameraState(name);
+  if (!feed) return false;
+
+  if (feed.frameSrc) return true;
+  return Boolean(getCameraStatus(name)?.streaming);
+}
+
+function syncPrimaryCameraSelection() {
+  const primaryCameraName = getPrimaryCameraName();
+  const secondaryCameraName = getSecondaryCameraName();
+
+  if (cameraHasRenderableFeed(primaryCameraName) || !cameraHasRenderableFeed(secondaryCameraName)) {
+    return;
+  }
+
+  state.primaryCameraName = secondaryCameraName;
+}
+
+function renderCameraFeeds() {
+  syncPrimaryCameraSelection();
+
+  const primaryCameraName = getPrimaryCameraName();
+  const secondaryCameraName = getSecondaryCameraName();
+  const primaryFeed = getCameraState(primaryCameraName);
+  const secondaryFeed = getCameraState(secondaryCameraName);
+
+  setImageSource(elements.video, primaryFeed?.frameSrc || "");
+  setImageSource(elements.primaryMiniVideo, primaryFeed?.frameSrc || "");
+  setImageSource(elements.secondaryVideo, secondaryFeed?.frameSrc || "");
+
+  setSecondaryUnavailable(!cameraHasRenderableFeed(secondaryCameraName));
+  elements.switchCameraBtn.disabled = !cameraHasRenderableFeed(secondaryCameraName);
 }
 
 function setLidarStatus(text, mode = "warn") {
@@ -244,6 +324,7 @@ function setDeviceConnected(connected) {
   }
   syncLatencySampling();
   renderDeviceStatus();
+  renderCameraFeeds();
 }
 
 function applyPiTemperature(payload) {
@@ -448,8 +529,69 @@ function extractLatestPiTemperature(events) {
   return null;
 }
 
+function extractLatestCameraStatus(events) {
+  if (!Array.isArray(events)) return null;
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isObject(event) || event.deviceId !== backend.deviceId) continue;
+    if (event.eventType !== "camera.status") continue;
+    return event.payload;
+  }
+
+  return null;
+}
+
+function applyCameraStatus(payload) {
+  if (!isObject(payload)) return;
+
+  CAMERA_NAMES.forEach((cameraName) => {
+    if (!isObject(payload[cameraName])) return;
+    const nextStatus = {
+      ...payload[cameraName],
+      name: cameraName
+    };
+    const feed = getCameraState(cameraName);
+    if (!feed) return;
+    feed.status = nextStatus;
+  });
+
+  renderCameraFeeds();
+}
+
+function applyCameraFrame(frame) {
+  if (!isObject(frame)) return;
+
+  const cameraName = String(frame.cameraName || "").trim();
+  const feed = getCameraState(cameraName);
+  if (!feed) return;
+
+  const mimeType = String(frame.mimeType || "image/jpeg").trim() || "image/jpeg";
+  const jpegBase64 = String(frame.jpegBase64 || "").trim();
+  if (!jpegBase64) return;
+
+  feed.frameSrc = `data:${mimeType};base64,${jpegBase64}`;
+  feed.lastFrameAtMs = Date.now();
+  feed.status = {
+    ...(feed.status || {}),
+    name: cameraName,
+    available: true,
+    streaming: true,
+    width: Number(frame.width) || feed.status?.width || null,
+    height: Number(frame.height) || feed.status?.height || null,
+    lastFrameAt: typeof frame.capturedAt === "string" ? frame.capturedAt : null
+  };
+
+  renderCameraFeeds();
+}
+
 function applySerializableState(statePayload) {
   const latestEvents = statePayload?.recentEvents;
+  const cameraStatusPayload = extractLatestCameraStatus(latestEvents);
+  if (cameraStatusPayload) {
+    applyCameraStatus(cameraStatusPayload);
+  }
+
   const lidarStatusPayload = extractLatestLidarStatus(latestEvents);
   if (lidarStatusPayload) {
     applyLidarStatus(lidarStatusPayload);
@@ -487,6 +629,11 @@ function handlePiEventMessage(message) {
   const event = message.event;
   if (!isObject(event) || event.deviceId !== backend.deviceId) return;
   setDeviceConnected(true);
+
+  if (event.eventType === "camera.status") {
+    applyCameraStatus(event.payload);
+    return;
+  }
 
   if (event.eventType === "lidar.scan") {
     updateLidarScan(event.payload);
@@ -530,6 +677,14 @@ function handleCommandAcceptedMessage(message) {
   latencyState.pendingByCommandId.set(command.id, sentAt);
 }
 
+function handleCameraFrameMessage(message) {
+  const frame = message.frame;
+  if (!isObject(frame) || frame.deviceId !== backend.deviceId) return;
+
+  setDeviceConnected(true);
+  applyCameraFrame(frame);
+}
+
 function handleBackendMessage(message) {
   if (!isObject(message)) return;
 
@@ -550,6 +705,11 @@ function handleBackendMessage(message) {
 
   if (message.type === "pi:ack") {
     handlePiAckMessage(message);
+    return;
+  }
+
+  if (message.type === "camera:frame") {
+    handleCameraFrameMessage(message);
     return;
   }
 
@@ -697,6 +857,7 @@ function connectBackendSocket() {
     console.info("Connected to backend control socket.");
     lidarState.staleStatusEnabled = true;
     void syncBackendState();
+    requestDeviceStatusSnapshot();
     startBackendStateSync();
     syncLatencySampling();
     if (!lidarState.lastScanAtMs) {
@@ -737,6 +898,26 @@ function sendBackendMessage(payload) {
   return true;
 }
 
+function requestDeviceStatusSnapshot() {
+  sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command: "camera_status",
+      params: {}
+    }
+  });
+
+  sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command: "lidar_status",
+      params: {}
+    }
+  });
+}
+
 function sendDriveCommand(command, params = {}) {
   const sent = sendBackendMessage({
     type: "ui:command",
@@ -774,34 +955,6 @@ function stopAllDrive() {
   if (!driveState.activeKey) return;
   driveState.activeKey = null;
   sendDriveCommand("stop");
-}
-
-function getConstraints(facingMode) {
-  return {
-    audio: false,
-    video: {
-      facingMode: { ideal: facingMode }
-    }
-  };
-}
-
-function getOppositeFacingMode(facingMode) {
-  return facingMode === "user" ? "environment" : "user";
-}
-
-function stopStream(stream) {
-  if (!stream) return;
-  stream.getTracks().forEach((track) => track.stop());
-}
-
-function stopCameras() {
-  stopStream(state.primaryStream);
-  stopStream(state.secondaryStream);
-  state.primaryStream = null;
-  state.secondaryStream = null;
-  elements.video.srcObject = null;
-  elements.primaryMiniVideo.srcObject = null;
-  elements.secondaryVideo.srcObject = null;
 }
 
 function setSecondaryCollapsed(collapsed) {
@@ -855,63 +1008,16 @@ function toggleViewMode() {
   setViewMode(state.viewMode === "lidar" ? "camera" : "lidar");
 }
 
-async function requestCameraStream(constraints) {
-  return navigator.mediaDevices.getUserMedia(constraints);
-}
+function swapPrimaryCamera() {
+  const secondaryCameraName = getSecondaryCameraName();
+  if (!cameraHasRenderableFeed(secondaryCameraName)) return;
 
-async function startPrimaryCamera() {
-  try {
-    const stream = await requestCameraStream(getConstraints(state.facingMode));
-    state.primaryStream = stream;
-    elements.video.srcObject = stream;
-    elements.primaryMiniVideo.srcObject = stream;
-    return true;
-  } catch (error) {
-    if (state.facingMode === "environment") {
-      state.facingMode = "user";
-      return startPrimaryCamera();
-    }
-
-    console.error("Unable to access camera:", error);
-    setSecondaryUnavailable(true);
-    return false;
-  }
-}
-
-async function startSecondaryCamera() {
-  const secondaryFacingMode = getOppositeFacingMode(state.facingMode);
-
-  try {
-    const stream = await requestCameraStream(getConstraints(secondaryFacingMode));
-    state.secondaryStream = stream;
-    elements.secondaryVideo.srcObject = stream;
-    setSecondaryUnavailable(false);
-    return;
-  } catch (error) {
-    try {
-      const fallbackStream = await requestCameraStream({ audio: false, video: true });
-      state.secondaryStream = fallbackStream;
-      elements.secondaryVideo.srcObject = fallbackStream;
-      setSecondaryUnavailable(false);
-      return;
-    } catch {
-      elements.secondaryVideo.srcObject = null;
-      setSecondaryUnavailable(true);
-      console.warn("Unable to start secondary camera feed:", error);
-    }
-  }
-}
-
-async function startCameraFeeds() {
-  stopCameras();
-
-  const primaryStarted = await startPrimaryCamera();
-  if (!primaryStarted) return;
-
-  await startSecondaryCamera();
+  state.primaryCameraName = secondaryCameraName;
+  renderCameraFeeds();
 }
 
 renderDeviceStatus();
+renderCameraFeeds();
 
 function setPressed(key, pressed) {
   const button = controlButtons.get(key);
@@ -973,9 +1079,8 @@ function setupEvents() {
     toggleViewMode();
   });
 
-  elements.switchCameraBtn.addEventListener("click", async () => {
-    state.facingMode = getOppositeFacingMode(state.facingMode);
-    await startCameraFeeds();
+  elements.switchCameraBtn.addEventListener("click", () => {
+    swapPrimaryCamera();
   });
 
   elements.settingsBtn.addEventListener("click", (event) => {
@@ -1017,7 +1122,6 @@ function setupEvents() {
   });
   window.addEventListener("beforeunload", () => {
     stopAllDrive();
-    stopCameras();
   });
 }
 
@@ -1036,14 +1140,7 @@ function boot() {
   }
 
   connectBackendSocket();
-
-  if (navigator.mediaDevices?.getUserMedia) {
-    startCameraFeeds();
-    return;
-  }
-
-  console.error("Media devices API is not available in this browser.");
-  setSecondaryUnavailable(true);
+  renderCameraFeeds();
 }
 
 boot();

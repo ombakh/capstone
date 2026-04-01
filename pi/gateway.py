@@ -5,15 +5,18 @@ Raspberry Pi gateway base:
 - Forwards UI drive commands to ESP32 over serial
 - Publishes ESP32 telemetry to backend
 - Publishes dual-camera status to backend
+- Streams live JPEG frames for both Pi cameras
 - Streams LiDAR scans to backend for web visualization
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -91,6 +94,10 @@ class Config:
     camera_right_index: int
     heartbeat_interval_sec: float
     camera_publish_interval_sec: float
+    camera_stream_hz: float
+    camera_frame_width: int
+    camera_frame_height: int
+    camera_jpeg_quality: int
     lidar_enabled: bool
     lidar_port: str
     lidar_max_distance_mm: int
@@ -125,6 +132,10 @@ class Config:
             camera_right_index=env_int("CAMERA_RIGHT_INDEX", 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
             camera_publish_interval_sec=env_float("CAMERA_PUBLISH_SEC", 2.0),
+            camera_stream_hz=env_float("CAMERA_STREAM_HZ", 6.0),
+            camera_frame_width=env_int("CAMERA_FRAME_WIDTH", 960),
+            camera_frame_height=env_int("CAMERA_FRAME_HEIGHT", 720),
+            camera_jpeg_quality=env_int("CAMERA_JPEG_QUALITY", 60),
             lidar_enabled=env_flag("LIDAR_ENABLED", default=True),
             lidar_port=os.getenv("LIDAR_SERIAL_PORT", lidar_default_port),
             lidar_max_distance_mm=env_int("LIDAR_MAX_DISTANCE_MM", 6000),
@@ -218,59 +229,422 @@ class EspSerialBridge:
         self._close_serial()
 
 
-class CameraMonitor:
-    def __init__(self, left_index: int, right_index: int) -> None:
-        self.left_index = left_index
-        self.right_index = right_index
-        self._captures: Dict[int, Any] = {}
+JPEG_SOI = b"\xff\xd8"
+JPEG_EOI = b"\xff\xd9"
 
-    def _unavailable_status(self, index: int, label: str, reason: str) -> JsonDict:
-        return {
-            "name": label,
-            "index": index,
-            "available": False,
-            "reason": reason,
+
+def clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
+
+
+def find_camera_stream_command() -> Tuple[str, ...]:
+    candidates = ("rpicam-vid", "libcamera-vid")
+    available = [command for command in candidates if shutil.which(command)]
+    return tuple(available)
+
+
+class CameraWorker:
+    def __init__(
+        self,
+        name: str,
+        index: int,
+        frame_width: int,
+        frame_height: int,
+        stream_hz: float,
+        jpeg_quality: int,
+        camera_commands: Tuple[str, ...],
+    ) -> None:
+        self.name = name
+        self.index = index
+        self.frame_width = max(160, frame_width)
+        self.frame_height = max(120, frame_height)
+        self.stream_hz = max(1.0, stream_hz)
+        self.jpeg_quality = clamp_int(jpeg_quality, 20, 95)
+        self.camera_commands = camera_commands
+
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._process: Optional[subprocess.Popen[bytes]] = None
+
+        self._lock = threading.Lock()
+        self._latest_frame: Optional[JsonDict] = None
+        self._sequence = 0
+        self._available = False
+        self._streaming = False
+        self._last_frame_at: Optional[str] = None
+        self._last_error = ""
+        self._capture_backend = ""
+        self._status_width = self.frame_width
+        self._status_height = self.frame_height
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"camera-{self.name}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._stop_process()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def consume_latest(self, last_sequence: int) -> Optional[JsonDict]:
+        with self._lock:
+            if not self._latest_frame:
+                return None
+
+            sequence = int(self._latest_frame.get("sequence", 0))
+            if sequence <= last_sequence:
+                return None
+
+            return dict(self._latest_frame)
+
+    def status(self) -> JsonDict:
+        with self._lock:
+            return {
+                "name": self.name,
+                "index": self.index,
+                "available": self._available,
+                "streaming": self._streaming,
+                "backend": self._capture_backend or "unavailable",
+                "width": self._status_width if self._available else None,
+                "height": self._status_height if self._available else None,
+                "fps": self.stream_hz if self._available else 0.0,
+                "lastFrameAt": self._last_frame_at,
+                "reason": self._last_error or None,
+            }
+
+    def _set_state(
+        self,
+        *,
+        available: bool,
+        streaming: bool,
+        backend_name: Optional[str] = None,
+        error: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> None:
+        with self._lock:
+            self._available = available
+            self._streaming = streaming
+            if backend_name is not None:
+                self._capture_backend = backend_name
+            if error is not None:
+                self._last_error = error
+            if width is not None and width > 0:
+                self._status_width = width
+            if height is not None and height > 0:
+                self._status_height = height
+
+    def _store_frame(self, jpeg_bytes: bytes, width: int, height: int) -> None:
+        encoded = base64.b64encode(jpeg_bytes).decode("ascii")
+        captured_at = now_iso()
+
+        with self._lock:
+            self._sequence += 1
+            self._last_frame_at = captured_at
+            self._status_width = width
+            self._status_height = height
+            self._available = True
+            self._streaming = True
+            self._last_error = ""
+            self._latest_frame = {
+                "cameraName": self.name,
+                "index": self.index,
+                "mimeType": "image/jpeg",
+                "jpegBase64": encoded,
+                "width": width,
+                "height": height,
+                "capturedAt": captured_at,
+                "sequence": self._sequence,
+            }
+
+    def _stop_process(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        close_quietly(process.stdout, "close")
+
+    def _build_rpicam_command(self, command_name: str) -> List[str]:
+        return [
+            command_name,
+            "--camera",
+            str(self.index),
+            "--nopreview",
+            "--codec",
+            "mjpeg",
+            "--timeout",
+            "0",
+            "--framerate",
+            f"{self.stream_hz:.2f}",
+            "--width",
+            str(self.frame_width),
+            "--height",
+            str(self.frame_height),
+            "--quality",
+            str(self.jpeg_quality),
+            "--output",
+            "-",
+        ]
+
+    def _run(self) -> None:
+        if self.camera_commands:
+            self._run_rpicam_backend()
+            return
+
+        if cv2 is not None:
+            self._run_opencv_backend()
+            return
+
+        self._set_state(
+            available=False,
+            streaming=False,
+            backend_name="unavailable",
+            error="camera backend unavailable (missing rpicam/libcamera command and opencv)",
+        )
+
+    def _run_rpicam_backend(self) -> None:
+        while not self._stop_event.is_set():
+            for command_name in self.camera_commands:
+                if self._stop_event.is_set():
+                    return
+
+                if self._stream_with_rpicam(command_name):
+                    return
+
+                if self._stop_event.is_set():
+                    return
+            time.sleep(1.0)
+
+    def _stream_with_rpicam(self, command_name: str) -> bool:
+        command = self._build_rpicam_command(command_name)
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+        except OSError as exc:
+            self._set_state(
+                available=False,
+                streaming=False,
+                backend_name=command_name,
+                error=str(exc),
+            )
+            return False
+
+        self._process = process
+        self._set_state(
+            available=False,
+            streaming=False,
+            backend_name=command_name,
+            error="waiting-for-frames",
+        )
+
+        stdout = process.stdout
+        if stdout is None:
+            self._set_state(
+                available=False,
+                streaming=False,
+                backend_name=command_name,
+                error="camera process missing stdout",
+            )
+            self._stop_process()
+            return False
+
+        buffer = bytearray()
+        try:
+            while not self._stop_event.is_set():
+                chunk = stdout.read(65536)
+                if not chunk:
+                    break
+
+                buffer.extend(chunk)
+                for frame in self._extract_jpegs(buffer):
+                    self._set_state(
+                        available=True,
+                        streaming=True,
+                        backend_name=command_name,
+                        error="",
+                        width=self.frame_width,
+                        height=self.frame_height,
+                    )
+                    self._store_frame(frame, self.frame_width, self.frame_height)
+        finally:
+            return_code = process.poll()
+            self._stop_process()
+            if not self._stop_event.is_set():
+                self._set_state(
+                    available=False,
+                    streaming=False,
+                    backend_name=command_name,
+                    error=f"{command_name} exited with code {return_code}",
+                )
+
+        return False
+
+    @staticmethod
+    def _extract_jpegs(buffer: bytearray) -> List[bytes]:
+        frames: List[bytes] = []
+        while True:
+            start_index = buffer.find(JPEG_SOI)
+            if start_index < 0:
+                if len(buffer) > 1:
+                    del buffer[:-1]
+                break
+
+            if start_index > 0:
+                del buffer[:start_index]
+
+            end_index = buffer.find(JPEG_EOI, 2)
+            if end_index < 0:
+                break
+
+            frame = bytes(buffer[: end_index + 2])
+            del buffer[: end_index + 2]
+            if len(frame) >= 1024:
+                frames.append(frame)
+
+        return frames
+
+    def _run_opencv_backend(self) -> None:
+        assert cv2 is not None
+
+        frame_interval = 1.0 / self.stream_hz
+        while not self._stop_event.is_set():
+            capture = cv2.VideoCapture(self.index)
+            if not capture.isOpened():
+                close_quietly(capture, "release")
+                self._set_state(
+                    available=False,
+                    streaming=False,
+                    backend_name="opencv",
+                    error="opencv could not open camera",
+                )
+                time.sleep(1.0)
+                continue
+
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.frame_width))
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.frame_height))
+            capture.set(cv2.CAP_PROP_FPS, float(self.stream_hz))
+
+            self._set_state(
+                available=True,
+                streaming=False,
+                backend_name="opencv",
+                error="waiting-for-frames",
+            )
+
+            try:
+                while not self._stop_event.is_set():
+                    ok, frame = capture.read()
+                    if not ok or frame is None:
+                        self._set_state(
+                            available=False,
+                            streaming=False,
+                            backend_name="opencv",
+                            error="opencv read failed",
+                        )
+                        break
+
+                    ok, encoded = cv2.imencode(
+                        ".jpg",
+                        frame,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+                    )
+                    if not ok:
+                        continue
+
+                    height, width = frame.shape[:2]
+                    self._set_state(
+                        available=True,
+                        streaming=True,
+                        backend_name="opencv",
+                        error="",
+                        width=int(width),
+                        height=int(height),
+                    )
+                    self._store_frame(encoded.tobytes(), int(width), int(height))
+                    time.sleep(frame_interval)
+            finally:
+                close_quietly(capture, "release")
+
+
+class CameraManager:
+    def __init__(
+        self,
+        left_index: int,
+        right_index: int,
+        frame_width: int,
+        frame_height: int,
+        stream_hz: float,
+        jpeg_quality: int,
+    ) -> None:
+        self.stream_hz = max(1.0, stream_hz)
+        camera_commands = find_camera_stream_command()
+        self._workers = {
+            "left": CameraWorker(
+                name="left",
+                index=left_index,
+                frame_width=frame_width,
+                frame_height=frame_height,
+                stream_hz=self.stream_hz,
+                jpeg_quality=jpeg_quality,
+                camera_commands=camera_commands,
+            ),
+            "right": CameraWorker(
+                name="right",
+                index=right_index,
+                frame_width=frame_width,
+                frame_height=frame_height,
+                stream_hz=self.stream_hz,
+                jpeg_quality=jpeg_quality,
+                camera_commands=camera_commands,
+            ),
         }
 
-    def _open_capture(self, index: int) -> Optional[Any]:
-        if cv2 is None:
+    @property
+    def names(self) -> Tuple[str, ...]:
+        return tuple(self._workers.keys())
+
+    def start(self) -> None:
+        for worker in self._workers.values():
+            worker.start()
+
+    def consume_latest(self, name: str, last_sequence: int) -> Optional[JsonDict]:
+        worker = self._workers.get(name)
+        if worker is None:
             return None
-
-        capture = self._captures.get(index)
-        if capture is not None and capture.isOpened():
-            return capture
-
-        capture = cv2.VideoCapture(index)
-        self._captures[index] = capture
-        return capture
-
-    def _camera_status(self, index: int, label: str) -> JsonDict:
-        if cv2 is None:
-            return self._unavailable_status(index, label, "opencv-not-installed")
-
-        capture = self._open_capture(index)
-        if capture is None or not capture.isOpened():
-            return self._unavailable_status(index, label, "not-opened")
-
-        return {
-            "name": label,
-            "index": index,
-            "available": True,
-            "width": int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            "height": int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            "fps": float(capture.get(cv2.CAP_PROP_FPS) or 0.0),
-        }
+        return worker.consume_latest(last_sequence)
 
     def snapshot(self) -> JsonDict:
-        return {
-            "left": self._camera_status(self.left_index, "left"),
-            "right": self._camera_status(self.right_index, "right"),
-        }
+        return {name: worker.status() for name, worker in self._workers.items()}
 
     def close(self) -> None:
-        for capture in self._captures.values():
-            close_quietly(capture, "release")
-        self._captures.clear()
+        for worker in self._workers.values():
+            worker.stop()
 
 
 class PiTemperatureReader:
@@ -591,7 +965,14 @@ class PiGateway:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.esp = EspSerialBridge(config.esp_serial_port, config.esp_baud)
-        self.cameras = CameraMonitor(config.camera_left_index, config.camera_right_index)
+        self.cameras = CameraManager(
+            left_index=config.camera_left_index,
+            right_index=config.camera_right_index,
+            frame_width=config.camera_frame_width,
+            frame_height=config.camera_frame_height,
+            stream_hz=config.camera_stream_hz,
+            jpeg_quality=config.camera_jpeg_quality,
+        )
         self.temperature = PiTemperatureReader()
         self.lidar = LidarBridge(
             enabled=config.lidar_enabled,
@@ -633,6 +1014,7 @@ class PiGateway:
         )
 
     async def run_forever(self) -> None:
+        self.cameras.start()
         self.lidar.start()
         backoff = 1.0
         while True:
@@ -656,16 +1038,20 @@ class PiGateway:
                     "motorEcho": self.config.motor_echo,
                     "motorEchoOnly": self.config.motor_echo_only,
                     "cameraIndexes": [self.config.camera_left_index, self.config.camera_right_index],
+                    "cameraStreamHz": self.config.camera_stream_hz,
+                    "cameraFrameSize": [self.config.camera_frame_width, self.config.camera_frame_height],
                     "lidar": self.lidar.status(),
                 },
             )
             await self._publish_temperature(ws)
+            await self._send_event(ws, event_type="camera.status", payload=self.cameras.snapshot())
 
             tasks = [
                 asyncio.create_task(self._recv_loop(ws), name="recv_loop"),
                 asyncio.create_task(self._heartbeat_loop(ws), name="heartbeat_loop"),
                 asyncio.create_task(self._esp_loop(ws), name="esp_loop"),
-                asyncio.create_task(self._camera_loop(ws), name="camera_loop"),
+                asyncio.create_task(self._camera_status_loop(ws), name="camera_status_loop"),
+                asyncio.create_task(self._camera_frame_loop(ws), name="camera_frame_loop"),
                 asyncio.create_task(self._lidar_loop(ws), name="lidar_loop"),
             ]
 
@@ -723,6 +1109,22 @@ class PiGateway:
                     "status": status,
                     "details": details or {},
                     "timestamp": now_iso(),
+                },
+            },
+        )
+
+    async def _send_camera_frame(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        frame: JsonDict,
+    ) -> None:
+        await self._send_json(
+            ws,
+            {
+                "type": "pi:camera_frame",
+                "frame": {
+                    "deviceId": self.config.device_id,
+                    **frame,
                 },
             },
         )
@@ -886,7 +1288,7 @@ class PiGateway:
             event_type = f"esp.{str(esp_message.get('type', 'telemetry')).strip() or 'telemetry'}"
             await self._send_event(ws, event_type=event_type, payload=esp_message)
 
-    async def _camera_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+    async def _camera_status_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
             await asyncio.sleep(self.config.camera_publish_interval_sec)
             await self._send_event(
@@ -894,6 +1296,20 @@ class PiGateway:
                 event_type="camera.status",
                 payload=self.cameras.snapshot(),
             )
+
+    async def _camera_frame_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+        interval_sec = max(0.05, 1.0 / max(1.0, self.config.camera_stream_hz))
+        last_sequences = {name: 0 for name in self.cameras.names}
+
+        while True:
+            await asyncio.sleep(interval_sec)
+            for name in self.cameras.names:
+                frame = self.cameras.consume_latest(name, last_sequences.get(name, 0))
+                if not frame:
+                    continue
+
+                last_sequences[name] = int(frame.get("sequence", last_sequences.get(name, 0)))
+                await self._send_camera_frame(ws, frame)
 
     async def _lidar_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         if not self.config.lidar_enabled:

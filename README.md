@@ -1,7 +1,7 @@
 # Capstone
 
 Browser-based robot control app with directional controls, backend command routing,
-Pi telemetry, and optional ESP32 serial bridging.
+Pi telemetry, dual Pi camera streaming, and optional ESP32 serial bridging.
 
 ## Current Tested Setup
 
@@ -9,7 +9,7 @@ The most reliable development path in this repo is:
 
 - PC: runs the backend and serves the web app
 - Raspberry Pi: runs `pi/gateway.py`
-- Web app: sends arrow-key `drive` and `stop` commands
+- Web app: shows the two Pi camera feeds and sends arrow-key `drive` / `stop` commands
 - Pi gateway: receives commands over WebSocket and prints them in terminal echo mode
 
 That flow is useful before adding motor hardware.
@@ -79,6 +79,11 @@ streaming with `PI_LIDAR_ENABLED=0`.
 
 Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
 
+If two camera modules are attached to the Pi, the main view and side preview now
+render those live Pi feeds over the backend WebSocket path instead of using the
+browser's local webcam. By default, the gateway streams camera index `0` as the
+left feed and camera index `1` as the right feed.
+
 Expected Pi output:
 
 ```text
@@ -109,6 +114,7 @@ Motor command [echo-only] id=... stop
 - `make pi-run`: run the Pi gateway with its default settings
 - `make pi-run-echo`: run the Pi gateway in local echo-only mode
 - `make pi-connect-echo PC_IP=<ip>`: connect the Pi echo gateway to the PC backend
+- `CAMERA_STREAM_HZ`, `CAMERA_FRAME_WIDTH`, `CAMERA_FRAME_HEIGHT`, `CAMERA_JPEG_QUALITY`: tune Pi camera streaming
 - `make pi-keys`: send direct arrow-key serial input to an attached ESP32
 - `make help`: list available targets
 

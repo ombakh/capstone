@@ -113,8 +113,9 @@ Path: `/ws`
 Message types:
 
 - Pi -> backend: `pi:event`, `pi:ack`, `pi:heartbeat`
+- Pi -> backend: `pi:camera_frame`
 - UI -> backend: `ui:command`
-- Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`
+- Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`, `camera:frame`
 - Backend -> Pi: `ui:command`
 
 ## Common Development Topology
