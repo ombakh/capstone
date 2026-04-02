@@ -367,6 +367,15 @@ function closeSocket(socket, code, reason) {
   socket.close(code, reason);
 }
 
+function getRemoteAddress(request) {
+  const forwardedFor = getHeaderValue(request.headers, "x-forwarded-for");
+  if (forwardedFor) {
+    return String(forwardedFor).split(",")[0].trim();
+  }
+
+  return request.socket?.remoteAddress || "unknown";
+}
+
 function requirePiAuth(req, res, next) {
   if (!config.piDeviceToken) {
     next();
@@ -450,6 +459,7 @@ function registerPiSocket(socket, deviceId) {
 
   piClients.set(deviceId, socket);
   setDeviceOnline(deviceId, "ws");
+  console.log(`pi connected deviceId=${deviceId}`);
   safeJsonSend(socket, {
     type: "ws:ready",
     role: "pi",
@@ -524,6 +534,7 @@ function handleSocketClose(role, socket, deviceId) {
   if (role === "pi" && piClients.get(deviceId) === socket) {
     piClients.delete(deviceId);
     setDeviceOffline(deviceId);
+    console.log(`pi disconnected deviceId=${deviceId}`);
     broadcastToUi({
       type: "pi:status",
       deviceId,
@@ -541,22 +552,28 @@ wsServer.on("connection", (socket, request) => {
   const role = requestUrl.searchParams.get("role");
   const deviceId = requestUrl.searchParams.get("deviceId") || "";
   const token = extractRequestToken(requestUrl, request);
+  const remoteAddress = getRemoteAddress(request);
 
   if (role === "ui") {
+    console.log(`ui connected remote=${remoteAddress}`);
     uiClients.add(socket);
     sendSnapshot(socket);
   } else if (role === "pi") {
     if (!deviceId) {
+      console.warn(`pi rejected remote=${remoteAddress} reason=missing_device_id`);
       closeSocket(socket, WS_POLICY_VIOLATION, "deviceId is required");
       return;
     }
     if (config.piDeviceToken && token !== config.piDeviceToken) {
+      console.warn(`pi rejected remote=${remoteAddress} deviceId=${deviceId} reason=invalid_device_token`);
       closeSocket(socket, WS_POLICY_VIOLATION, "invalid device token");
       return;
     }
 
+    console.log(`pi websocket accepted remote=${remoteAddress} deviceId=${deviceId}`);
     registerPiSocket(socket, deviceId);
   } else {
+    console.warn(`socket rejected remote=${remoteAddress} reason=invalid_role role=${role || "-"}`);
     closeSocket(socket, WS_POLICY_VIOLATION, "role must be ui or pi");
     return;
   }
@@ -576,6 +593,9 @@ wsServer.on("connection", (socket, request) => {
   });
 
   socket.on("close", () => {
+    if (role === "ui") {
+      console.log(`ui disconnected remote=${remoteAddress}`);
+    }
     handleSocketClose(role, socket, deviceId);
   });
 });

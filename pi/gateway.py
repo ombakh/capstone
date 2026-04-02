@@ -1967,6 +1967,13 @@ async def async_main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     config = Config.from_env()
+    logging.info(
+        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s lidarEnabled=%s",
+        config.device_id,
+        config.ws_url,
+        config.motor_driver,
+        config.lidar_enabled,
+    )
     gateway = PiGateway(config)
     try:
         await gateway.run_forever()
