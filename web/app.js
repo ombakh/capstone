@@ -248,16 +248,30 @@ function canDriveRobot() {
   return motorState.readyForDrive || (!motorState.requiresArm && motorState.driverAvailable);
 }
 
+function getEffectiveRecordingStatus(summary) {
+  if (!summary) return null;
+  if (
+    recordingState.optimisticPauseSessionId &&
+    recordingState.optimisticPauseStatus &&
+    summary.id === recordingState.optimisticPauseSessionId &&
+    (summary.status === "recording" || summary.status === "paused")
+  ) {
+    return recordingState.optimisticPauseStatus;
+  }
+
+  return summary.status || null;
+}
+
 function isRecordingActive(summary) {
-  return summary?.status === "recording";
+  return getEffectiveRecordingStatus(summary) === "recording";
 }
 
 function isRecordingPaused(summary) {
-  return summary?.status === "paused";
+  return getEffectiveRecordingStatus(summary) === "paused";
 }
 
 function isRecordingFinalizing(summary) {
-  return summary?.status === "finalizing";
+  return getEffectiveRecordingStatus(summary) === "finalizing";
 }
 
 function isRecordingReady(summary) {
@@ -1047,6 +1061,10 @@ function applyRecordingSummaries(summaries) {
   const optimisticPauseSummary = recordingState.optimisticPauseSessionId
     ? normalizedSummaries.find((summary) => summary.id === recordingState.optimisticPauseSessionId) || null
     : null;
+  const optimisticPauseSummarySettled = Boolean(
+    optimisticPauseSummary &&
+    !["recording", "paused"].includes(optimisticPauseSummary.status)
+  );
   const backendMatchedOptimisticPause = Boolean(
     optimisticPauseSummary &&
     recordingState.optimisticPauseStatus &&
@@ -1063,7 +1081,7 @@ function applyRecordingSummaries(summaries) {
   ) || null;
 
   if (recordingState.optimisticPauseSessionId) {
-    if (backendMatchedOptimisticPause || !optimisticPauseSummary) {
+    if (backendMatchedOptimisticPause || optimisticPauseSummarySettled || !optimisticPauseSummary) {
       clearOptimisticPauseState();
       recordingState.pendingAction = false;
     }
