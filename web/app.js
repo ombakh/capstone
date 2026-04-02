@@ -29,6 +29,8 @@ const elements = {
   recordingStateLabel: document.getElementById("recording-state-label"),
   recordingDetailLabel: document.getElementById("recording-detail-label"),
   recordingToggleButton: document.getElementById("recording-toggle-button"),
+  recordingPauseButton: document.getElementById("recording-pause-button"),
+  recordingPauseIcon: document.getElementById("recording-pause-icon"),
   recordingDownloadLink: document.getElementById("recording-download-link"),
   lidarCanvas: document.getElementById("lidar-canvas"),
   lidarStatus: document.getElementById("lidar-status"),
@@ -165,6 +167,19 @@ const recordingState = {
   pendingAction: false
 };
 
+const RECORDING_PAUSE_ICON_SVG = `
+  <svg viewBox="0 0 24 24" focusable="false">
+    <rect x="7" y="5.5" width="3.2" height="13" rx="1.1"></rect>
+    <rect x="13.8" y="5.5" width="3.2" height="13" rx="1.1"></rect>
+  </svg>
+`;
+
+const RECORDING_PLAY_ICON_SVG = `
+  <svg viewBox="0 0 24 24" focusable="false">
+    <path d="M8 6.4v11.2a.7.7 0 0 0 1.07.59l8.82-5.6a.7.7 0 0 0 0-1.18L9.07 5.81A.7.7 0 0 0 8 6.4Z"></path>
+  </svg>
+`;
+
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -234,6 +249,10 @@ function isRecordingActive(summary) {
   return summary?.status === "recording";
 }
 
+function isRecordingPaused(summary) {
+  return summary?.status === "paused";
+}
+
 function isRecordingFinalizing(summary) {
   return summary?.status === "finalizing";
 }
@@ -242,13 +261,26 @@ function isRecordingReady(summary) {
   return summary?.status === "ready" && typeof summary.downloadUrl === "string" && summary.downloadUrl;
 }
 
-function formatRecordingStats(summary) {
-  if (!summary) return "Not recording";
+function formatRecordingDuration(durationMs) {
+  const numericDurationMs = Number(durationMs);
+  if (!Number.isFinite(numericDurationMs) || numericDurationMs <= 0) {
+    return "00:00";
+  }
 
+  const totalSeconds = Math.max(0, Math.round(numericDurationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function buildRecordingSummaryLine(summary) {
+  if (!summary) return "LiDAR view MP4 recorder is idle";
+
+  const durationLabel = formatRecordingDuration(summary.durationMs);
   const frontCount = Number(summary.cameraFrameCounts?.front || 0);
   const backCount = Number(summary.cameraFrameCounts?.back || 0);
   const lidarCount = Number(summary.lidarScanCount || 0);
-  return `Front ${frontCount} · Back ${backCount} · LiDAR ${lidarCount}`;
+  return `${durationLabel} captured · F ${frontCount} · R ${backCount} · L ${lidarCount}`;
 }
 
 function renderCameraStreamControls() {
@@ -524,6 +556,8 @@ function renderRecordingPanel() {
     !elements.recordingStateLabel ||
     !elements.recordingDetailLabel ||
     !elements.recordingToggleButton ||
+    !elements.recordingPauseButton ||
+    !elements.recordingPauseIcon ||
     !elements.recordingDownloadLink
   ) {
     return;
@@ -532,58 +566,94 @@ function renderRecordingPanel() {
   const activeSession = recordingState.activeSession;
   const latestCompletedSession = recordingState.latestCompletedSession;
   const active = isRecordingActive(activeSession);
+  const paused = isRecordingPaused(activeSession);
   const finalizing = isRecordingFinalizing(activeSession);
-  const readySession = isRecordingReady(latestCompletedSession) ? latestCompletedSession : null;
+  const readySession = !activeSession && isRecordingReady(latestCompletedSession) ? latestCompletedSession : null;
   const failedSession = latestCompletedSession?.status === "error" ? latestCompletedSession : null;
 
   elements.recordingPanel.classList.toggle("recording", active);
+  elements.recordingPanel.classList.toggle("paused", paused);
   elements.recordingPanel.classList.toggle("finalizing", finalizing);
-  elements.recordingPanel.classList.toggle("ready", !active && !finalizing && Boolean(readySession));
-  elements.recordingPanel.classList.toggle("idle", !active && !finalizing && !readySession);
+  elements.recordingPanel.classList.toggle("ready", !active && !paused && !finalizing && Boolean(readySession));
+  elements.recordingPanel.classList.toggle("idle", !active && !paused && !finalizing && !readySession);
 
   let stateLabel = "Recorder Idle";
-  let detailLabel = "Not recording";
-  let buttonLabel = "Start Recording";
-  let buttonDisabled = !deviceState.connected || recordingState.pendingAction;
+  let detailLabel = "LiDAR view MP4 recorder is idle";
+  let recordButtonLabel = "Start recording";
+  let recordButtonDisabled = !deviceState.connected || recordingState.pendingAction;
+  let pauseButtonVisible = false;
+  let pauseButtonLabel = "Pause recording";
+  let pauseButtonDisabled = recordingState.pendingAction;
+  let downloadVisible = false;
+  let downloadEnabled = false;
+  let downloadSession = null;
 
   if (activeSession && active) {
-    stateLabel = "Recording Live";
-    detailLabel = formatRecordingStats(activeSession);
-    buttonLabel = recordingState.pendingAction ? "Working..." : "Stop Recording";
-    buttonDisabled = recordingState.pendingAction;
+    stateLabel = "Recording";
+    detailLabel = buildRecordingSummaryLine(activeSession);
+    recordButtonLabel = recordingState.pendingAction ? "Working..." : "Stop recording";
+    recordButtonDisabled = recordingState.pendingAction;
+    pauseButtonVisible = true;
+    pauseButtonLabel = "Pause recording";
+  } else if (activeSession && paused) {
+    stateLabel = "Paused";
+    detailLabel = `${buildRecordingSummaryLine(activeSession)} · capture paused`;
+    recordButtonLabel = recordingState.pendingAction ? "Working..." : "Stop recording";
+    recordButtonDisabled = recordingState.pendingAction;
+    pauseButtonVisible = true;
+    pauseButtonLabel = "Resume recording";
   } else if (activeSession && finalizing) {
-    stateLabel = "Preparing Download";
-    detailLabel = "Packaging camera frames and LiDAR";
-    buttonLabel = "Preparing...";
-    buttonDisabled = true;
+    stateLabel = "Rendering MP4";
+    detailLabel = "Building fixed LiDAR playback with both cameras";
+    recordButtonLabel = "Rendering...";
+    recordButtonDisabled = true;
   } else if (readySession) {
-    stateLabel = "Session Ready";
-    detailLabel = formatRecordingStats(readySession);
-    buttonLabel = recordingState.pendingAction ? "Working..." : "Start New Recording";
+    stateLabel = "Download Ready";
+    detailLabel = `MP4 ready · ${formatRecordingDuration(readySession.durationMs)}`;
+    recordButtonLabel = recordingState.pendingAction ? "Working..." : "Start recording";
+    downloadVisible = true;
+    downloadEnabled = true;
+    downloadSession = readySession;
   } else if (failedSession) {
     stateLabel = "Recording Failed";
-    detailLabel = failedSession.error || "Recording could not be packaged";
-    buttonLabel = recordingState.pendingAction ? "Working..." : "Start New Recording";
+    detailLabel = failedSession.error || "Recording could not be rendered";
+    recordButtonLabel = recordingState.pendingAction ? "Working..." : "Start recording";
   } else if (recordingState.pendingAction) {
     stateLabel = "Recorder Busy";
     detailLabel = "Applying recording request";
-    buttonLabel = "Working...";
+    recordButtonLabel = "Working...";
   }
 
   elements.recordingStateLabel.textContent = stateLabel;
   elements.recordingDetailLabel.textContent = detailLabel;
-  elements.recordingToggleButton.textContent = buttonLabel;
-  elements.recordingToggleButton.disabled = buttonDisabled;
 
-  if (readySession) {
-    elements.recordingDownloadLink.classList.remove("hidden");
-    elements.recordingDownloadLink.href = `${backend.apiBaseUrl}${readySession.downloadUrl}`;
-    const safeRecordingId = String(readySession.id || "recording").replace(/[^a-zA-Z0-9_-]+/g, "-");
-    elements.recordingDownloadLink.setAttribute("download", `${safeRecordingId}.tar.gz`);
+  elements.recordingToggleButton.disabled = recordButtonDisabled;
+  elements.recordingToggleButton.setAttribute("aria-label", recordButtonLabel);
+  elements.recordingToggleButton.setAttribute("title", recordButtonLabel);
+  elements.recordingToggleButton.querySelector(".sr-only")?.replaceChildren(document.createTextNode(recordButtonLabel));
+
+  elements.recordingPauseButton.classList.toggle("hidden", !pauseButtonVisible);
+  elements.recordingPauseButton.disabled = pauseButtonDisabled;
+  elements.recordingPauseButton.setAttribute("aria-label", pauseButtonLabel);
+  elements.recordingPauseButton.setAttribute("title", pauseButtonLabel);
+  elements.recordingPauseButton.querySelector(".sr-only")?.replaceChildren(document.createTextNode(pauseButtonLabel));
+  elements.recordingPauseIcon.innerHTML = paused ? RECORDING_PLAY_ICON_SVG : RECORDING_PAUSE_ICON_SVG;
+
+  elements.recordingDownloadLink.classList.toggle("hidden", !downloadVisible);
+  elements.recordingDownloadLink.classList.toggle("disabled", downloadVisible && !downloadEnabled);
+  elements.recordingDownloadLink.setAttribute("aria-disabled", String(downloadVisible && !downloadEnabled));
+
+  if (downloadEnabled && downloadSession) {
+    elements.recordingDownloadLink.href = `${backend.apiBaseUrl}${downloadSession.downloadUrl}`;
+    const safeRecordingId = String(downloadSession.id || "recording").replace(/[^a-zA-Z0-9_-]+/g, "-");
+    elements.recordingDownloadLink.setAttribute("download", downloadSession.downloadFilename || `${safeRecordingId}.mp4`);
+    elements.recordingDownloadLink.setAttribute("title", "Download recording");
+    elements.recordingDownloadLink.setAttribute("aria-label", "Download recording");
   } else {
-    elements.recordingDownloadLink.classList.add("hidden");
     elements.recordingDownloadLink.removeAttribute("href");
     elements.recordingDownloadLink.removeAttribute("download");
+    elements.recordingDownloadLink.setAttribute("title", finalizing ? "Rendering MP4" : "Download recording");
+    elements.recordingDownloadLink.setAttribute("aria-label", finalizing ? "Rendering MP4" : "Download recording");
   }
 }
 
@@ -904,8 +974,16 @@ function normalizeRecordingSummary(summary) {
     totalCameraFrames: Number(summary.totalCameraFrames) || 0,
     cameraFrameCounts: isObject(summary.cameraFrameCounts) ? { ...summary.cameraFrameCounts } : {},
     lidarScanCount: Number(summary.lidarScanCount) || 0,
-    archiveFilename: typeof summary.archiveFilename === "string" ? summary.archiveFilename : null,
-    archiveSizeBytes: Number(summary.archiveSizeBytes) || 0,
+    pauseCount: Number(summary.pauseCount) || 0,
+    totalPausedMs: Number(summary.totalPausedMs) || 0,
+    durationMs: Number(summary.durationMs) || 0,
+    downloadFilename:
+      typeof summary.downloadFilename === "string"
+        ? summary.downloadFilename
+        : (typeof summary.archiveFilename === "string" ? summary.archiveFilename : null),
+    downloadSizeBytes: Number(summary.downloadSizeBytes) || Number(summary.archiveSizeBytes) || 0,
+    downloadContentType:
+      typeof summary.downloadContentType === "string" ? summary.downloadContentType : "video/mp4",
     error: typeof summary.error === "string" ? summary.error : null,
     downloadUrl: typeof summary.downloadUrl === "string" ? summary.downloadUrl : null
   };
@@ -921,7 +999,7 @@ function applyRecordingSummaries(summaries) {
 
   recordingState.summaries = normalizedSummaries;
   recordingState.activeSession = normalizedSummaries.find(
-    (summary) => summary.status === "recording" || summary.status === "finalizing"
+    (summary) => summary.status === "recording" || summary.status === "paused" || summary.status === "finalizing"
   ) || null;
   recordingState.latestCompletedSession = normalizedSummaries.find(
     (summary) => summary.status === "ready" || summary.status === "error"
@@ -1529,6 +1607,31 @@ async function toggleRecording() {
   }
 }
 
+async function toggleRecordingPause() {
+  if (recordingState.pendingAction || !deviceState.connected || !recordingState.activeSession) return;
+  if (isRecordingFinalizing(recordingState.activeSession)) return;
+
+  recordingState.pendingAction = true;
+  renderRecordingPanel();
+
+  try {
+    const payload = await sendRecordingRequest("/api/recordings/pause", {
+      deviceId: backend.deviceId,
+      paused: !isRecordingPaused(recordingState.activeSession)
+    });
+    if (payload?.recording) {
+      applyRecordingUpdate(payload.recording);
+      return;
+    }
+    recordingState.pendingAction = false;
+    renderRecordingPanel();
+  } catch (error) {
+    recordingState.pendingAction = false;
+    renderRecordingPanel();
+    console.warn(`Unable to toggle recording pause: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function clearDriveRepeatTimer() {
   if (!driveState.repeatTimer) return;
   window.clearInterval(driveState.repeatTimer);
@@ -1752,6 +1855,10 @@ function setupEvents() {
 
   elements.recordingToggleButton?.addEventListener("click", () => {
     void toggleRecording();
+  });
+
+  elements.recordingPauseButton?.addEventListener("click", () => {
+    void toggleRecordingPause();
   });
 
   elements.switchCameraBtn.addEventListener("click", () => {

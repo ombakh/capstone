@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260402-2" />
+  <link rel="stylesheet" href="./styles.css?v=20260402-3" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -15,7 +15,6 @@
           <canvas id="lidar-canvas" class="lidar-canvas" width="420" height="420"></canvas>
           <div class="lidar-grid"></div>
           <div class="lidar-head">
-            <span class="lidar-label">LiDAR</span>
             <span id="lidar-status" class="lidar-status">CONNECTING</span>
           </div>
         </div>
@@ -133,8 +132,33 @@
             <span id="recording-dot" class="recording-dot" aria-hidden="true"></span>
           </div>
           <div id="recording-detail-label" class="recording-detail-label">Not recording</div>
-          <button id="recording-toggle-button" class="recording-toggle-button" type="button">Start Recording</button>
-          <a id="recording-download-link" class="recording-download-link hidden" href="#" download>Download Recording</a>
+          <div class="recording-actions">
+            <button id="recording-toggle-button" class="recording-action-button recording-toggle-button" type="button" aria-label="Start recording" title="Start recording">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="5.4" />
+              </svg>
+              <span class="sr-only">Start Recording</span>
+            </button>
+            <button id="recording-pause-button" class="recording-action-button recording-secondary-button hidden" type="button" aria-label="Pause recording" title="Pause recording">
+              <span id="recording-pause-icon" class="recording-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <rect x="7" y="5.5" width="3.2" height="13" rx="1.1" />
+                  <rect x="13.8" y="5.5" width="3.2" height="13" rx="1.1" />
+                </svg>
+              </span>
+              <span class="sr-only">Pause Recording</span>
+            </button>
+            <a id="recording-download-link" class="recording-action-button recording-secondary-button recording-download-link hidden" href="#" download aria-label="Download recording" title="Download recording">
+              <span class="recording-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M12 5v9" />
+                  <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+                  <path d="M6 18.5h12" />
+                </svg>
+              </span>
+              <span class="sr-only">Download Recording</span>
+            </a>
+          </div>
         </div>
 
         <button
@@ -174,6 +198,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260402-2"></script>
+  <script src="./app.js?v=20260402-3"></script>
 </body>
 </html>

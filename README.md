@@ -87,7 +87,8 @@ code in this repository today.
 - Web frontend:
   currently served from the PC, shows the robot camera feeds and LiDAR view, and
   sends drive commands to the robot. It can also start/stop backend-managed
-  recording sessions and download the resulting archive when packaging finishes.
+  recording sessions, pause/resume them mid-run, and download the finished
+  fixed-layout MP4 once rendering completes.
 - Network dependency:
   the Pi must be able to reach the backend on port `3000`; the documented setup
   uses either the local network or Tailscale.

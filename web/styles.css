@@ -254,7 +254,7 @@ body {
   z-index: 2;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.5rem;
   pointer-events: none;
 }
@@ -571,7 +571,7 @@ body {
 }
 
 .recording-panel {
-  min-width: 196px;
+  min-width: 214px;
   padding: 0.76rem 0.84rem;
   border-radius: 14px;
   border: 1px solid rgba(255, 160, 160, 0.34);
@@ -586,6 +586,13 @@ body {
 .recording-panel.recording {
   border-color: rgba(255, 128, 128, 0.56);
   box-shadow: 0 14px 32px rgba(46, 5, 10, 0.54);
+}
+
+.recording-panel.paused {
+  border-color: rgba(255, 188, 122, 0.52);
+  background:
+    radial-gradient(circle at 80% 18%, rgba(255, 184, 104, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(46, 21, 9, 0.94), rgba(23, 11, 5, 0.9));
 }
 
 .recording-panel.finalizing {
@@ -639,6 +646,11 @@ body {
   box-shadow: 0 0 0 0.2rem rgba(137, 240, 161, 0.12);
 }
 
+.recording-panel.paused .recording-dot {
+  background: var(--status-amber);
+  box-shadow: 0 0 0 0.2rem rgba(255, 211, 143, 0.12);
+}
+
 .recording-detail-label {
   margin-top: 0.34rem;
   min-height: 2rem;
@@ -647,55 +659,117 @@ body {
   color: rgba(243, 248, 255, 0.9);
 }
 
-.recording-toggle-button,
-.recording-download-link {
-  width: 100%;
-  margin-top: 0.62rem;
-  padding: 0.62rem 0.76rem;
-  border-radius: 10px;
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  text-align: center;
-  text-decoration: none;
-  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease, opacity 0.12s ease;
+.recording-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.62rem;
+  margin-top: 0.7rem;
 }
 
-.recording-toggle-button {
-  border: 1px solid rgba(255, 168, 168, 0.38);
-  background: linear-gradient(180deg, rgba(150, 24, 40, 0.96), rgba(109, 14, 29, 0.92));
-  color: rgba(255, 246, 246, 0.98);
+.recording-action-button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  text-decoration: none;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease;
+}
+
+.recording-toggle-button,
+.recording-secondary-button {
   cursor: pointer;
 }
 
-.recording-panel.recording .recording-toggle-button {
-  border-color: rgba(255, 210, 210, 0.48);
-  background: linear-gradient(180deg, rgba(255, 112, 112, 0.96), rgba(186, 28, 51, 0.94));
+.recording-toggle-button {
+  position: relative;
+  width: 2.7rem;
+  height: 2.7rem;
+  border-radius: 999px;
+  background: transparent;
+  color: #ff6767;
+  box-shadow: none;
 }
 
-.recording-panel.ready .recording-toggle-button {
-  border-color: rgba(255, 168, 168, 0.24);
+.recording-toggle-button::before {
+  content: "";
+  position: absolute;
+  inset: 0.18rem;
+  border-radius: 999px;
+  background: rgba(255, 98, 98, 0.14);
+  opacity: 0;
+  transform: scale(0.82);
+}
+
+.recording-toggle-button svg,
+.recording-secondary-button svg {
+  width: 1.18rem;
+  height: 1.18rem;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.recording-toggle-button svg {
+  width: 1.8rem;
+  height: 1.8rem;
+  fill: currentColor;
+  stroke: none;
+}
+
+.recording-panel.recording .recording-toggle-button {
+  animation: record-button-pulse 1.25s ease-out infinite;
+}
+
+.recording-panel.recording .recording-toggle-button::before {
+  opacity: 1;
+}
+
+.recording-panel.paused .recording-toggle-button {
+  opacity: 0.78;
+}
+
+.recording-secondary-button {
+  width: 2.52rem;
+  height: 2.52rem;
+  border-radius: 13px;
+  border: 1px solid rgba(214, 236, 255, 0.22);
+  background: rgba(8, 21, 34, 0.82);
+  color: rgba(239, 248, 255, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.recording-panel.finalizing .recording-secondary-button,
+.recording-panel.ready .recording-secondary-button {
+  border-color: rgba(170, 226, 190, 0.3);
 }
 
 .recording-toggle-button:active,
-.recording-download-link:active {
+.recording-secondary-button:active {
   transform: scale(0.985);
 }
 
-.recording-toggle-button:disabled {
+.recording-toggle-button:disabled,
+.recording-secondary-button:disabled,
+.recording-secondary-button.disabled {
   opacity: 0.5;
   cursor: default;
   transform: none;
+  pointer-events: none;
 }
 
 .recording-download-link {
-  border: 1px solid rgba(165, 235, 188, 0.34);
-  background: rgba(8, 28, 16, 0.54);
+  width: 2.3rem;
+  height: 2.3rem;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   color: rgba(225, 255, 235, 0.98);
 }
 
-.recording-download-link.hidden {
+.recording-action-button.hidden {
   display: none;
 }
 
@@ -706,6 +780,30 @@ body {
   100% {
     box-shadow: 0 0 0 0.5rem rgba(255, 107, 107, 0);
   }
+}
+
+@keyframes record-button-pulse {
+  0% {
+    transform: scale(0.98);
+  }
+  55% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(0.98);
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .motor-status-panel {

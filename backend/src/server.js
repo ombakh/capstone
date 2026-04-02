@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 
 import cors from "cors";
@@ -23,9 +24,11 @@ const WS_POLICY_VIOLATION = 1008;
 const WS_SERVICE_RESTART = 1012;
 const DRIVE_DIRECTIONS = new Set(["forward", "reverse", "left", "right", "stop"]);
 const RECORDING_STATUS_RECORDING = "recording";
+const RECORDING_STATUS_PAUSED = "paused";
 const RECORDING_STATUS_FINALIZING = "finalizing";
 const RECORDING_STATUS_READY = "ready";
 const RECORDING_STATUS_ERROR = "error";
+const RECORDING_OUTPUT_CONTENT_TYPE = "video/mp4";
 
 const config = {
   host: process.env.BACKEND_HOST || "0.0.0.0",
@@ -35,7 +38,13 @@ const config = {
   eventHistoryLimit: Number(process.env.EVENT_HISTORY_LIMIT || 300),
   commandQueueLimit: Number(process.env.COMMAND_QUEUE_LIMIT || 100),
   recordingsDir: path.resolve(process.env.BACKEND_RECORDINGS_DIR || path.join(process.cwd(), "recordings")),
-  recordingsHistoryLimit: Number(process.env.RECORDINGS_HISTORY_LIMIT || 25)
+  recordingsHistoryLimit: Number(process.env.RECORDINGS_HISTORY_LIMIT || 25),
+  recordingRendererScript: path.resolve(
+    process.env.RECORDING_RENDERER_SCRIPT || path.join(process.cwd(), "scripts", "render_recording.swift")
+  ),
+  recordingVideoFps: Math.max(1, Math.floor(Number(process.env.RECORDING_VIDEO_FPS || 12) || 12)),
+  recordingVideoWidth: Math.max(640, Math.floor(Number(process.env.RECORDING_VIDEO_WIDTH || 1280) || 1280)),
+  recordingVideoHeight: Math.max(360, Math.floor(Number(process.env.RECORDING_VIDEO_HEIGHT || 720) || 720))
 };
 
 fs.mkdirSync(config.recordingsDir, { recursive: true });
@@ -94,10 +103,10 @@ function safeFilenameFragment(value) {
     .replace(/^-+|-+$/g, "") || "item";
 }
 
-function toArchiveFilename(deviceId, startedAt, recordingId) {
+function toRecordingVideoFilename(deviceId, startedAt, recordingId) {
   const safeDeviceId = safeFilenameFragment(deviceId);
   const safeStartedAt = safeFilenameFragment(startedAt.replace(/[:.]/g, "-"));
-  return `${safeDeviceId}-${safeStartedAt}-${recordingId.slice(0, 8)}.tar.gz`;
+  return `${safeDeviceId}-${safeStartedAt}-${recordingId.slice(0, 8)}.mp4`;
 }
 
 function toFrameFilename(frame) {
@@ -120,10 +129,75 @@ function serializeRecordingSummary(summary) {
   if (!summary) return null;
 
   const clone = cloneRecordingSummary(summary);
-  delete clone.archivePath;
+  delete clone.downloadPath;
   delete clone.sessionDir;
+  delete clone.pausedAt;
   clone.downloadUrl = clone.status === RECORDING_STATUS_READY ? `/api/recordings/${clone.id}/download` : null;
   return clone;
+}
+
+function parseTimestampMs(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildRecordingTimelineMs(sourceTimestamp, startedAtMs, totalPausedMs, lastTimelineMs) {
+  const sourceTimestampMs = parseTimestampMs(sourceTimestamp);
+  if (!Number.isFinite(sourceTimestampMs) || !Number.isFinite(startedAtMs)) {
+    return lastTimelineMs;
+  }
+
+  const nextTimelineMs = Math.max(0, Math.round(sourceTimestampMs - startedAtMs - totalPausedMs));
+  return Math.max(lastTimelineMs, nextTimelineMs);
+}
+
+async function renderRecordingVideo({ sessionDir, outputPath }) {
+  const rendererScriptPath = config.recordingRendererScript;
+  if (!fs.existsSync(rendererScriptPath)) {
+    throw new Error(`recording renderer script is missing: ${rendererScriptPath}`);
+  }
+
+  const moduleCacheDir = path.join(os.tmpdir(), "capstone-swift-module-cache");
+  await fsp.mkdir(moduleCacheDir, { recursive: true });
+
+  const args = [
+    rendererScriptPath,
+    "--session-dir",
+    sessionDir,
+    "--output",
+    outputPath,
+    "--width",
+    String(config.recordingVideoWidth),
+    "--height",
+    String(config.recordingVideoHeight),
+    "--fps",
+    String(config.recordingVideoFps)
+  ];
+
+  await new Promise((resolve, reject) => {
+    const child = spawn("swift", args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        ...process.env,
+        SWIFT_MODULECACHE_PATH: moduleCacheDir,
+        CLANG_MODULE_CACHE_PATH: moduleCacheDir
+      }
+    });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `swift exited with code ${code}`));
+    });
+  });
 }
 
 function listRecordingSummaries() {
@@ -173,11 +247,15 @@ class RecordingSession {
     this.deviceDir = path.join(config.recordingsDir, safeFilenameFragment(summary.deviceId));
     this.sessionDirName = `${safeFilenameFragment(summary.startedAt.replace(/[:.]/g, "-"))}-${summary.id.slice(0, 8)}`;
     this.sessionDir = path.join(this.deviceDir, this.sessionDirName);
-    this.archivePath = path.join(this.deviceDir, toArchiveFilename(summary.deviceId, summary.startedAt, summary.id));
+    this.downloadPath = path.join(this.deviceDir, toRecordingVideoFilename(summary.deviceId, summary.startedAt, summary.id));
     this.lidarPath = path.join(this.sessionDir, "lidar.ndjson");
     this.manifestPath = path.join(this.sessionDir, "manifest.json");
     this.cameraMetadataPaths = new Map();
     this.cameraDirectoryPaths = new Map();
+    this.startedAtMs = parseTimestampMs(summary.startedAt) ?? Date.now();
+    this.totalPausedMs = Number(summary.totalPausedMs) || 0;
+    this.pausedStartedAtMs = null;
+    this.lastTimelineMs = 0;
   }
 
   async initialize() {
@@ -192,11 +270,72 @@ class RecordingSession {
       this.summary.status = RECORDING_STATUS_ERROR;
       this.summary.error = error instanceof Error ? error.message : String(error);
       this.summary.endedAt = this.summary.endedAt || nowIso();
+      this.summary.pausedAt = null;
       state.activeRecordingIdsByDevice.delete(this.summary.deviceId);
       recordingSessions.delete(this.summary.id);
       broadcastRecordingStatus(this.summary);
     });
     return nextTask;
+  }
+
+  isPaused() {
+    return this.summary.status === RECORDING_STATUS_PAUSED;
+  }
+
+  pause(timestamp = nowIso()) {
+    if (this.summary.status !== RECORDING_STATUS_RECORDING) {
+      return false;
+    }
+
+    this.summary.status = RECORDING_STATUS_PAUSED;
+    this.summary.pausedAt = timestamp;
+    this.summary.pauseCount += 1;
+    this.summary.updatedAt = timestamp;
+    this.summary.durationMs = Math.max(Number(this.summary.durationMs) || 0, this.lastTimelineMs);
+    this.pausedStartedAtMs = parseTimestampMs(timestamp) ?? Date.now();
+    return true;
+  }
+
+  resume(timestamp = nowIso()) {
+    if (this.summary.status !== RECORDING_STATUS_PAUSED) {
+      return false;
+    }
+
+    const resumedAtMs = parseTimestampMs(timestamp) ?? Date.now();
+    if (Number.isFinite(this.pausedStartedAtMs)) {
+      this.totalPausedMs += Math.max(0, resumedAtMs - this.pausedStartedAtMs);
+      this.summary.totalPausedMs = this.totalPausedMs;
+    }
+
+    this.summary.status = RECORDING_STATUS_RECORDING;
+    this.summary.pausedAt = null;
+    this.summary.updatedAt = timestamp;
+    this.pausedStartedAtMs = null;
+    return true;
+  }
+
+  sealTimeline(timestamp = nowIso()) {
+    if (Number.isFinite(this.pausedStartedAtMs)) {
+      const endedAtMs = parseTimestampMs(timestamp) ?? Date.now();
+      this.totalPausedMs += Math.max(0, endedAtMs - this.pausedStartedAtMs);
+      this.summary.totalPausedMs = this.totalPausedMs;
+      this.pausedStartedAtMs = null;
+    }
+
+    this.summary.durationMs = Math.max(Number(this.summary.durationMs) || 0, this.lastTimelineMs);
+    this.summary.pausedAt = null;
+    this.summary.updatedAt = timestamp;
+  }
+
+  getTimelineMs(sourceTimestamp) {
+    this.lastTimelineMs = buildRecordingTimelineMs(
+      sourceTimestamp,
+      this.startedAtMs,
+      this.totalPausedMs,
+      this.lastTimelineMs
+    );
+    this.summary.durationMs = Math.max(Number(this.summary.durationMs) || 0, this.lastTimelineMs);
+    return this.lastTimelineMs;
   }
 
   async ensureCameraPaths(cameraName) {
@@ -216,11 +355,14 @@ class RecordingSession {
   }
 
   async recordLidarScan(event) {
-    if (event.eventType !== "lidar.scan") return;
+    if (event.eventType !== "lidar.scan" || this.isPaused()) return;
+
+    const timelineMs = this.getTimelineMs(event.receivedAt || event.timestamp);
 
     const line = `${JSON.stringify({
       timestamp: event.timestamp,
       receivedAt: event.receivedAt,
+      timelineMs,
       payload: event.payload
     })}\n`;
 
@@ -230,7 +372,10 @@ class RecordingSession {
   }
 
   async recordCameraFrame(frame) {
+    if (this.isPaused()) return;
+
     const jpegBuffer = Buffer.from(frame.jpegBase64, "base64");
+    const timelineMs = this.getTimelineMs(frame.receivedAt || frame.capturedAt);
 
     this.summary.totalCameraFrames += 1;
     this.summary.cameraFrameCounts[frame.cameraName] = (this.summary.cameraFrameCounts[frame.cameraName] || 0) + 1;
@@ -243,6 +388,8 @@ class RecordingSession {
       const metadataLine = `${JSON.stringify({
         cameraName: frame.cameraName,
         capturedAt: frame.capturedAt,
+        receivedAt: frame.receivedAt,
+        timelineMs,
         sequence: frame.sequence,
         width: frame.width,
         height: frame.height,
@@ -272,39 +419,28 @@ class RecordingSession {
               metadata: path.relative(this.sessionDir, metadataPath)
             }
           ])
-        )
+        ),
+        video: this.summary.downloadPath ? path.relative(this.sessionDir, this.summary.downloadPath) : null
       }
     };
 
     await fsp.writeFile(this.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   }
 
-  async buildArchive() {
+  async buildVideo() {
     await this.flush();
     await this.writeManifest();
-    await new Promise((resolve, reject) => {
-      const child = spawn("tar", ["-czf", this.archivePath, "-C", this.deviceDir, this.sessionDirName], {
-        stdio: ["ignore", "ignore", "pipe"]
-      });
 
-      let stderr = "";
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-      child.on("error", reject);
-      child.on("close", (code) => {
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        reject(new Error(stderr.trim() || `tar exited with code ${code}`));
-      });
+    await renderRecordingVideo({
+      sessionDir: this.sessionDir,
+      outputPath: this.downloadPath
     });
 
-    const archiveStats = await fsp.stat(this.archivePath);
-    this.summary.archiveFilename = path.basename(this.archivePath);
-    this.summary.archivePath = this.archivePath;
-    this.summary.archiveSizeBytes = archiveStats.size;
+    const videoStats = await fsp.stat(this.downloadPath);
+    this.summary.downloadFilename = path.basename(this.downloadPath);
+    this.summary.downloadPath = this.downloadPath;
+    this.summary.downloadSizeBytes = videoStats.size;
+    this.summary.downloadContentType = RECORDING_OUTPUT_CONTENT_TYPE;
     this.summary.status = RECORDING_STATUS_READY;
     this.summary.updatedAt = nowIso();
     await this.writeManifest();
@@ -423,6 +559,7 @@ function normalizeCameraFrame(input, fallbackDeviceId = "") {
     cameraName,
     mimeType,
     jpegBase64,
+    receivedAt: nowIso(),
     width: Number.isFinite(width) && width > 0 ? Math.round(width) : null,
     height: Number.isFinite(height) && height > 0 ? Math.round(height) : null,
     capturedAt: typeof input.capturedAt === "string" ? input.capturedAt : nowIso(),
@@ -717,9 +854,14 @@ app.post("/api/recordings/start", async (req, res) => {
       totalCameraFrames: 0,
       cameraFrameCounts: {},
       lidarScanCount: 0,
-      archiveFilename: null,
-      archivePath: null,
-      archiveSizeBytes: 0,
+      pauseCount: 0,
+      totalPausedMs: 0,
+      durationMs: 0,
+      pausedAt: null,
+      downloadFilename: null,
+      downloadPath: null,
+      downloadSizeBytes: 0,
+      downloadContentType: null,
       error: null
     };
 
@@ -737,7 +879,7 @@ app.post("/api/recordings/start", async (req, res) => {
 
 async function finalizeRecordingSession(session) {
   try {
-    await session.buildArchive();
+    await session.buildVideo();
   } catch (error) {
     session.summary.status = RECORDING_STATUS_ERROR;
     session.summary.error = error instanceof Error ? error.message : String(error);
@@ -747,6 +889,38 @@ async function finalizeRecordingSession(session) {
     broadcastRecordingStatus(session.summary);
   }
 }
+
+app.post("/api/recordings/pause", (req, res) => {
+  try {
+    ensureObject(req.body, "recording");
+    const deviceId = String(req.body.deviceId || "").trim();
+    if (!deviceId) {
+      throw new Error("recording.deviceId is required");
+    }
+
+    const summary = getActiveRecordingSummary(deviceId);
+    if (!summary) {
+      respondNotFound(res, "no active recording for this device");
+      return;
+    }
+
+    const session = recordingSessions.get(summary.id);
+    if (!session) {
+      respondServerError(res, "recording session missing");
+      return;
+    }
+
+    const paused = req.body.paused !== false;
+    const changed = paused ? session.pause() : session.resume();
+    if (changed) {
+      broadcastRecordingStatus(summary);
+    }
+
+    respondAccepted(res, { recording: serializeRecordingSummary(summary) });
+  } catch (error) {
+    respondBadRequest(res, error);
+  }
+});
 
 app.post("/api/recordings/stop", (req, res) => {
   try {
@@ -768,9 +942,11 @@ app.post("/api/recordings/stop", (req, res) => {
       return;
     }
 
+    const endedAt = nowIso();
+    session.sealTimeline(endedAt);
     summary.status = RECORDING_STATUS_FINALIZING;
-    summary.endedAt = nowIso();
-    summary.updatedAt = nowIso();
+    summary.endedAt = endedAt;
+    summary.updatedAt = endedAt;
     state.activeRecordingIdsByDevice.delete(deviceId);
     broadcastRecordingStatus(summary);
     void finalizeRecordingSession(session);
@@ -788,21 +964,21 @@ app.get("/api/recordings/:recordingId/download", (req, res) => {
     return;
   }
   if (summary.status === RECORDING_STATUS_FINALIZING) {
-    respondConflict(res, "recording archive is still being prepared");
+    respondConflict(res, "recording video is still being prepared");
     return;
   }
-  if (summary.status !== RECORDING_STATUS_READY || !summary.archivePath) {
-    respondNotFound(res, "recording archive is not available");
+  if (summary.status !== RECORDING_STATUS_READY || !summary.downloadPath) {
+    respondNotFound(res, "recording video is not available");
     return;
   }
-  if (!fs.existsSync(summary.archivePath)) {
-    respondNotFound(res, "recording archive file is missing");
+  if (!fs.existsSync(summary.downloadPath)) {
+    respondNotFound(res, "recording video file is missing");
     return;
   }
 
-  res.setHeader("Content-Type", "application/gzip");
-  res.setHeader("Content-Disposition", `attachment; filename="${summary.archiveFilename}"`);
-  fs.createReadStream(summary.archivePath).pipe(res);
+  res.setHeader("Content-Type", summary.downloadContentType || RECORDING_OUTPUT_CONTENT_TYPE);
+  res.setHeader("Content-Disposition", `attachment; filename="${summary.downloadFilename || `${recordingId}.mp4`}"`);
+  fs.createReadStream(summary.downloadPath).pipe(res);
 });
 
 function sendSnapshot(socket) {

@@ -9,7 +9,7 @@ This service is the command broker for the project:
 - UI commands are validated, queued if needed, and forwarded to the target Pi
 - Pi events and acknowledgements are broadcast back to connected UI clients
 - The backend can record LiDAR scans and both camera streams into session folders
-  and package the finished session as a downloadable archive
+  and render the finished session as a downloadable MP4
 
 ## Run
 
@@ -41,6 +41,10 @@ when started through the root `Makefile`.
 - `COMMAND_QUEUE_LIMIT` default: `100`
 - `BACKEND_RECORDINGS_DIR` default: `<backend cwd>/recordings`
 - `RECORDINGS_HISTORY_LIMIT` default: `25`
+- `RECORDING_VIDEO_WIDTH` default: `1280`
+- `RECORDING_VIDEO_HEIGHT` default: `720`
+- `RECORDING_VIDEO_FPS` default: `12`
+- `RECORDING_RENDERER_SCRIPT` default: `<backend cwd>/scripts/render_recording.swift`
 
 ## Health Check
 
@@ -70,8 +74,9 @@ can reach this endpoint before debugging the WebSocket path.
 - `POST /api/ui/command`: send command to a Pi device
 - `POST /api/ui/drive`: validated drive command helper endpoint
 - `POST /api/recordings/start`: begin backend-managed recording for a Pi device
-- `POST /api/recordings/stop`: stop and package an active recording
-- `GET /api/recordings/:recordingId/download`: download a finished recording archive
+- `POST /api/recordings/pause`: pause or resume an active recording
+- `POST /api/recordings/stop`: stop and render an active recording
+- `GET /api/recordings/:recordingId/download`: download a finished recording MP4
 
 ### `POST /api/pi/event` payload
 
@@ -125,8 +130,11 @@ The backend stores:
 - JPEG frames under `cameras/front/` and `cameras/back/`
 - `manifest.json`
 
-When stopped, the backend packages the session as a `.tar.gz` archive and the
-web UI exposes a download button once the archive is ready.
+When stopped, the backend renders the session into a fixed-layout `.mp4` with a
+large LiDAR view and both camera feeds. The web UI keeps the download arrow
+hidden until that MP4 is ready.
+The default renderer is the Swift script in `backend/scripts/`, so the host
+running the backend must have the macOS command-line Swift toolchain available.
 
 ## WebSocket
 
