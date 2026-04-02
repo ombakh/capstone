@@ -95,7 +95,7 @@ code in this repository today.
 What is effectively in the robot today is a Raspberry Pi 5 with two NOIR
 cameras, a LiDAR connected to the Pi, and an optional ESP32 serial companion.
 What is not yet fully onboard in this repo is the backend/web hosting layer and
-the final physical motor-driver implementation.
+the final hardware-specific ESC calibration for your exact drivetrain.
 
 ## Requirements
 
@@ -164,7 +164,7 @@ without restarting the Pi gateway.
 Expected Pi output:
 
 ```text
-Motor command [echo-only] id=... drive direction=forward speed=0.55 durationMs=0
+Motor command [echo-only] id=... drive direction=forward speed=0.35 durationMs=650
 Motor command [echo-only] id=... stop
 ```
 

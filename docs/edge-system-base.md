@@ -4,8 +4,8 @@
 
 - **Web app**: sends drive commands, receives telemetry/map/status.
 - **Backend**: command/event broker and realtime fan-out.
-- **Raspberry Pi gateway**: connects to backend, can echo commands locally or bridge to ESP32 + cameras.
-- **ESP32**: optional motor controller, returns motor telemetry/acks.
+- **Raspberry Pi gateway**: connects to backend, owns cameras/LiDAR, and can run motors in `echo`, direct `esc`, or `esp` bridge mode.
+- **ESP32**: optional serial motor companion for development or alternate low-level control.
 
 ## Common Development Topology
 
@@ -25,25 +25,33 @@ the PC backend directly. In that case, use Tailscale or a different network.
 
 1. Web app -> backend: `POST /api/ui/drive` or WebSocket `ui:command`
 2. Backend -> Pi gateway: `ui:command`
-3. Pi gateway -> terminal echo output or ESP32 serial JSON command line
-4. ESP32 -> Pi gateway: serial JSON ack/telemetry (ESP mode only)
-5. Pi gateway -> backend: `pi:event` (`esp.*`) and `pi:ack`
-6. Backend -> Web app: realtime updates over WebSocket
+3. Web app requests `motor.status`; in ESC mode the UI keeps arrow keys disabled until the Pi reports `readyForDrive=true`
+4. In ESC mode the user sends `arm_motors`; the Pi holds neutral/arm pulse widths until the arm delay completes
+5. Pi gateway -> terminal echo output, direct ESC pulse updates, or ESP32 serial JSON command line
+6. ESP32 -> Pi gateway: serial JSON ack/telemetry (ESP mode only)
+7. Pi gateway -> backend: `pi:event` (`motor.status`, `esp.*`, sensor events) and `pi:ack`
+8. Backend -> Web app: realtime updates over WebSocket
 
 ### 2) Camera + sensor reporting
 
 1. Pi probes camera status for both camera indexes.
 2. Pi streams LiDAR scans as `lidar.scan`.
-3. Pi sends `camera.status` event to backend.
+3. Pi sends `camera.status`, `motor.status`, and other status events to backend.
 4. Backend forwards to UI subscribers.
 
 ### 3) No-hardware echo test
 
 1. Web app sends arrow-key command.
 2. Backend forwards `ui:command` to the Pi.
-3. Pi gateway logs the command locally in `PI_MOTOR_ECHO_ONLY=1` mode.
+3. Pi gateway logs the command locally in `PI_MOTOR_DRIVER=echo` mode.
 4. Pi gateway sends `pi:ack` back to the backend.
 5. Backend can fan that acknowledgement out to UI clients.
+
+### 4) ESC watchdog behavior
+
+1. While an arrow key is held, the web app refreshes `drive` commands at a short interval.
+2. The Pi gateway clamps requested speed to its configured `ESC_MAX_SPEED`.
+3. If command refresh stops for longer than `ESC_WATCHDOG_TIMEOUT_MS`, the Pi forces both ESCs back to neutral.
 
 ## Message Envelope (Backend Event)
 

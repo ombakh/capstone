@@ -95,7 +95,7 @@ pi-run:
 	python3 pi/gateway.py
 
 pi-run-echo:
-	PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
+	PI_MOTOR_DRIVER=echo python3 pi/gateway.py
 
 pi-run-esc:
 	PI_MOTOR_DRIVER=esc python3 pi/gateway.py
@@ -110,7 +110,7 @@ pi-connect-echo:
 		exit 1; \
 	fi
 	@. "$(PI_VENV_DIR)/bin/activate"; \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
+	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_DRIVER=echo python3 pi/gateway.py
 
 pi-connect-esc:
 	@if [ -z "$(HOST_IP)" ]; then \

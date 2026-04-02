@@ -183,7 +183,7 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `ESP_BAUD` default: `115200`
 - `PI_MOTOR_DRIVER` default: `esp` unless `PI_MOTOR_ECHO_ONLY=1`, supported values: `echo`, `esp`, `esc`
 - `PI_MOTOR_ECHO` default: `1` (log incoming motor commands to the Pi terminal)
-- `PI_MOTOR_ECHO_ONLY` default: `0` (set `1` to skip ESP serial and only print commands)
+- `PI_MOTOR_ECHO_ONLY` default: `0` (legacy compatibility shortcut for `PI_MOTOR_DRIVER=echo`)
 - `ESC_LEFT_GPIO` default: `18`
 - `ESC_RIGHT_GPIO` default: `19`
 - `ESC_LEFT_INVERTED` / `ESC_RIGHT_INVERTED` default: `0`
