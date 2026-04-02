@@ -13,11 +13,18 @@ const elements = {
   fullCameraViewToggle: document.getElementById("full-camera-view-toggle"),
   cameraFramerateSlider: document.getElementById("camera-framerate-slider"),
   cameraFramerateValue: document.getElementById("camera-framerate-value"),
+  driveSpeedSlider: document.getElementById("drive-speed-slider"),
+  driveSpeedValue: document.getElementById("drive-speed-value"),
   lidarModeBtn: document.getElementById("lidar-mode-button"),
   piStatusPanel: document.getElementById("pi-status-panel"),
   piConnectionLabel: document.getElementById("pi-connection-label"),
   piTemperature: document.getElementById("pi-temperature"),
   piLatency: document.getElementById("pi-latency"),
+  motorStatusPanel: document.getElementById("motor-status-panel"),
+  motorStateLabel: document.getElementById("motor-state-label"),
+  motorDriverLabel: document.getElementById("motor-driver-label"),
+  motorDetailLabel: document.getElementById("motor-detail-label"),
+  motorArmButton: document.getElementById("motor-arm-button"),
   lidarCanvas: document.getElementById("lidar-canvas"),
   lidarStatus: document.getElementById("lidar-status"),
   lidarZoomOutBtn: document.getElementById("lidar-zoom-out"),
@@ -32,7 +39,12 @@ const controlButtons = new Map(
 
 const DEFAULT_DEVICE_ID = "pi-01";
 const DEFAULT_BACKEND_PORT = "3000";
-const DEFAULT_DRIVE_SPEED = 0.55;
+const DEFAULT_DRIVE_SPEED = 0.35;
+const DRIVE_SPEED_MIN = 0.05;
+const DRIVE_SPEED_MAX = 1;
+const DRIVE_SPEED_STEP = 0.05;
+const DRIVE_KEEPALIVE_MS = 200;
+const DRIVE_COMMAND_TTL_MS = 650;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
 const CAMERA_NAMES = ["front", "back"];
@@ -100,7 +112,8 @@ const backend = {
 
 const driveState = {
   activeKey: null,
-  speed: DEFAULT_DRIVE_SPEED
+  speed: DEFAULT_DRIVE_SPEED,
+  repeatTimer: null
 };
 
 const deviceState = {
@@ -126,6 +139,18 @@ const latencyState = {
   pendingByNonce: new Map(),
   pendingByCommandId: new Map(),
   timer: null
+};
+
+const motorState = {
+  driver: null,
+  driverAvailable: false,
+  requiresArm: false,
+  armed: false,
+  arming: false,
+  readyForDrive: false,
+  maxSpeed: DEFAULT_DRIVE_SPEED,
+  lastError: null,
+  pendingArmToggle: false
 };
 
 function isObject(value) {
@@ -174,6 +199,25 @@ function formatCameraStreamFps(value, applying = false) {
   return applying ? `${fps} FPS...` : `${fps} FPS`;
 }
 
+function getDriveSpeedUpperBound() {
+  return clampNumber(motorState.maxSpeed, DEFAULT_DRIVE_SPEED, DRIVE_SPEED_MIN, DRIVE_SPEED_MAX);
+}
+
+function clampDriveSpeed(value) {
+  return clampNumber(value, DEFAULT_DRIVE_SPEED, DRIVE_SPEED_MIN, getDriveSpeedUpperBound());
+}
+
+function formatDriveSpeed(value) {
+  return `${Math.round(clampDriveSpeed(value) * 100)}%`;
+}
+
+function canDriveRobot() {
+  if (!deviceState.connected) return false;
+  if (!motorState.driverAvailable) return false;
+  if (motorState.requiresArm && (!motorState.armed || motorState.arming)) return false;
+  return motorState.readyForDrive || (!motorState.requiresArm && motorState.driverAvailable);
+}
+
 function renderCameraStreamControls() {
   if (elements.cameraFramerateSlider) {
     elements.cameraFramerateSlider.min = String(cameraControlState.minFps);
@@ -186,6 +230,25 @@ function renderCameraStreamControls() {
   if (elements.cameraFramerateValue) {
     const value = cameraControlState.applying ? cameraControlState.desiredFps : cameraControlState.actualFps;
     elements.cameraFramerateValue.textContent = formatCameraStreamFps(value, cameraControlState.applying);
+  }
+}
+
+function renderDriveSpeedControl() {
+  const clampedSpeed = clampDriveSpeed(driveState.speed);
+  if (clampedSpeed !== driveState.speed) {
+    driveState.speed = clampedSpeed;
+  }
+
+  if (elements.driveSpeedSlider) {
+    elements.driveSpeedSlider.min = String(DRIVE_SPEED_MIN);
+    elements.driveSpeedSlider.max = String(getDriveSpeedUpperBound());
+    elements.driveSpeedSlider.step = String(DRIVE_SPEED_STEP);
+    elements.driveSpeedSlider.value = String(clampedSpeed);
+    elements.driveSpeedSlider.disabled = !deviceState.connected;
+  }
+
+  if (elements.driveSpeedValue) {
+    elements.driveSpeedValue.textContent = formatDriveSpeed(clampedSpeed);
   }
 }
 
@@ -353,6 +416,75 @@ function renderDeviceStatus() {
   elements.piLatency.textContent = formatLatencyMs(deviceState.latencyMs);
 }
 
+function renderDriveControls() {
+  const driveEnabled = canDriveRobot();
+  controlButtons.forEach((button, key) => {
+    button.disabled = !driveEnabled;
+    if (!driveEnabled) {
+      setPressed(key, false);
+    }
+  });
+}
+
+function renderMotorStatus() {
+  if (
+    !elements.motorStatusPanel ||
+    !elements.motorStateLabel ||
+    !elements.motorDriverLabel ||
+    !elements.motorDetailLabel ||
+    !elements.motorArmButton
+  ) {
+    return;
+  }
+
+  let stateLabel = "MOTORS OFFLINE";
+  let detailLabel = "Waiting for motor status";
+
+  if (!deviceState.connected) {
+    stateLabel = "MOTORS OFFLINE";
+    detailLabel = "Pi connection is offline";
+  } else if (!motorState.driverAvailable) {
+    stateLabel = "MOTORS UNAVAILABLE";
+    detailLabel = motorState.lastError || "Motor driver is not ready";
+  } else if (motorState.arming) {
+    stateLabel = "ARMING";
+    detailLabel = "Holding both ESCs at neutral";
+  } else if (motorState.requiresArm && !motorState.armed) {
+    stateLabel = "MOTORS SAFE";
+    detailLabel = "Disarmed and holding neutral";
+  } else if (canDriveRobot()) {
+    stateLabel = motorState.requiresArm ? "ARMED" : "READY";
+    detailLabel = `Arrow keys live at ${formatDriveSpeed(driveState.speed)}`;
+  }
+
+  elements.motorStatusPanel.classList.toggle("armed", canDriveRobot());
+  elements.motorStatusPanel.classList.toggle("arming", motorState.arming);
+  elements.motorStatusPanel.classList.toggle("unavailable", !motorState.driverAvailable);
+  elements.motorStateLabel.textContent = stateLabel;
+  elements.motorDriverLabel.textContent = String(motorState.driver || "--").toUpperCase();
+  elements.motorDetailLabel.textContent = detailLabel;
+
+  if (!motorState.requiresArm) {
+    elements.motorArmButton.textContent = "Arming Not Needed";
+    elements.motorArmButton.disabled = true;
+  } else if (motorState.arming) {
+    elements.motorArmButton.textContent = "Arming...";
+    elements.motorArmButton.disabled = true;
+  } else if (motorState.pendingArmToggle) {
+    elements.motorArmButton.textContent = "Working...";
+    elements.motorArmButton.disabled = true;
+  } else if (motorState.armed) {
+    elements.motorArmButton.textContent = "Disarm Motors";
+    elements.motorArmButton.disabled = !deviceState.connected;
+  } else {
+    elements.motorArmButton.textContent = "Arm Motors";
+    elements.motorArmButton.disabled = !deviceState.connected || !motorState.driverAvailable;
+  }
+
+  renderDriveControls();
+  renderDriveSpeedControl();
+}
+
 function clearPendingLatencyState() {
   latencyState.pendingByNonce.clear();
   latencyState.pendingByCommandId.clear();
@@ -407,9 +539,20 @@ function setDeviceConnected(connected) {
     cameraControlState.applying = false;
     cameraControlState.pendingCommandId = null;
     cameraControlState.pendingRequestedFps = null;
+    motorState.driver = null;
+    motorState.driverAvailable = false;
+    motorState.requiresArm = false;
+    motorState.armed = false;
+    motorState.arming = false;
+    motorState.readyForDrive = false;
+    motorState.maxSpeed = DEFAULT_DRIVE_SPEED;
+    motorState.lastError = null;
+    motorState.pendingArmToggle = false;
+    stopAllDrive(false);
   }
   syncLatencySampling();
   renderDeviceStatus();
+  renderMotorStatus();
   renderCameraFeeds();
   renderCameraStreamControls();
 }
@@ -629,6 +772,19 @@ function extractLatestCameraStatus(events) {
   return null;
 }
 
+function extractLatestMotorStatus(events) {
+  if (!Array.isArray(events)) return null;
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isObject(event) || event.deviceId !== backend.deviceId) continue;
+    if (event.eventType !== "motor.status") continue;
+    return event.payload;
+  }
+
+  return null;
+}
+
 function applyCameraStatus(payload) {
   if (!isObject(payload)) return;
 
@@ -662,6 +818,28 @@ function applyCameraStatus(payload) {
   renderCameraStreamControls();
 }
 
+function applyMotorStatus(payload) {
+  if (!isObject(payload)) return;
+
+  const nextMaxSpeed = clampNumber(payload.maxSpeed, motorState.maxSpeed || DEFAULT_DRIVE_SPEED, DRIVE_SPEED_MIN, DRIVE_SPEED_MAX);
+
+  motorState.driver = typeof payload.driver === "string" ? payload.driver : motorState.driver;
+  motorState.driverAvailable = payload.driverAvailable === true;
+  motorState.requiresArm = payload.requiresArm === true;
+  motorState.armed = payload.armed === true;
+  motorState.arming = payload.arming === true;
+  motorState.readyForDrive = payload.readyForDrive === true;
+  motorState.maxSpeed = nextMaxSpeed;
+  motorState.lastError = typeof payload.lastError === "string" ? payload.lastError : null;
+  motorState.pendingArmToggle = false;
+
+  if (!canDriveRobot()) {
+    stopAllDrive(deviceState.connected);
+  }
+
+  renderMotorStatus();
+}
+
 function applyCameraFrame(frame) {
   if (!isObject(frame)) return;
 
@@ -690,9 +868,18 @@ function applyCameraFrame(frame) {
 
 function applySerializableState(statePayload) {
   const latestEvents = statePayload?.recentEvents;
+  const devices = Array.isArray(statePayload?.devices) ? statePayload.devices : [];
+  const currentDevice = devices.find((device) => isObject(device) && device.deviceId === backend.deviceId);
+  setDeviceConnected(Boolean(currentDevice?.connected));
+
   const cameraStatusPayload = extractLatestCameraStatus(latestEvents);
   if (cameraStatusPayload) {
     applyCameraStatus(cameraStatusPayload);
+  }
+
+  const motorStatusPayload = extractLatestMotorStatus(latestEvents);
+  if (motorStatusPayload) {
+    applyMotorStatus(motorStatusPayload);
   }
 
   const lidarStatusPayload = extractLatestLidarStatus(latestEvents);
@@ -709,10 +896,6 @@ function applySerializableState(statePayload) {
   if (temperaturePayload) {
     applyPiTemperature(temperaturePayload);
   }
-
-  const devices = Array.isArray(statePayload?.devices) ? statePayload.devices : [];
-  const currentDevice = devices.find((device) => isObject(device) && device.deviceId === backend.deviceId);
-  setDeviceConnected(Boolean(currentDevice?.connected));
 }
 
 function handleSnapshotMessage(message) {
@@ -735,6 +918,11 @@ function handlePiEventMessage(message) {
 
   if (event.eventType === "camera.status") {
     applyCameraStatus(event.payload);
+    return;
+  }
+
+  if (event.eventType === "motor.status") {
+    applyMotorStatus(event.payload);
     return;
   }
 
@@ -786,6 +974,11 @@ function handlePiAckMessage(message) {
     }
 
     renderCameraStreamControls();
+  }
+
+  if (["arm_motors", "disarm_motors", "motor_status", "drive", "stop"].includes(ack.details?.command)) {
+    motorState.pendingArmToggle = false;
+    renderMotorStatus();
   }
 }
 
@@ -1051,6 +1244,15 @@ function requestDeviceStatusSnapshot() {
       params: {}
     }
   });
+
+  sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command: "motor_status",
+      params: {}
+    }
+  });
 }
 
 function sendCameraStreamFpsCommand(nextFps) {
@@ -1102,30 +1304,95 @@ function sendDriveCommand(command, params = {}) {
   if (!sent) {
     console.warn("Unable to send command: backend socket is not connected.");
   }
+
+  return sent;
+}
+
+function sendMotorCommand(command, params = {}) {
+  const sent = sendBackendMessage({
+    type: "ui:command",
+    command: {
+      deviceId: backend.deviceId,
+      command,
+      params
+    }
+  });
+
+  if (!sent) {
+    console.warn("Unable to send motor command: backend socket is not connected.");
+  }
+
+  return sent;
+}
+
+function clearDriveRepeatTimer() {
+  if (!driveState.repeatTimer) return;
+  window.clearInterval(driveState.repeatTimer);
+  driveState.repeatTimer = null;
+}
+
+function sendActiveDriveCommand() {
+  const activeKey = driveState.activeKey;
+  const direction = activeKey ? DRIVE_KEY_TO_DIRECTION[activeKey] : null;
+  if (!direction || !canDriveRobot()) return;
+
+  sendDriveCommand("drive", {
+    direction,
+    speed: driveState.speed,
+    durationMs: DRIVE_COMMAND_TTL_MS
+  });
 }
 
 function startDrive(key) {
   const direction = DRIVE_KEY_TO_DIRECTION[key];
-  if (!direction || driveState.activeKey === key) return;
+  if (!direction || driveState.activeKey === key || !canDriveRobot()) return;
 
   driveState.activeKey = key;
-  sendDriveCommand("drive", {
-    direction,
-    speed: driveState.speed,
-    durationMs: 0
-  });
+  clearDriveRepeatTimer();
+  sendActiveDriveCommand();
+  driveState.repeatTimer = window.setInterval(sendActiveDriveCommand, DRIVE_KEEPALIVE_MS);
 }
 
-function stopDrive(key) {
+function stopDrive(key, sendStop = true) {
   if (driveState.activeKey !== key) return;
   driveState.activeKey = null;
-  sendDriveCommand("stop");
+  clearDriveRepeatTimer();
+  if (sendStop) {
+    sendDriveCommand("stop");
+  }
 }
 
-function stopAllDrive() {
-  if (!driveState.activeKey) return;
+function stopAllDrive(sendStop = true) {
+  if (!driveState.activeKey) {
+    clearDriveRepeatTimer();
+    return;
+  }
   driveState.activeKey = null;
-  sendDriveCommand("stop");
+  clearDriveRepeatTimer();
+  if (sendStop) {
+    sendDriveCommand("stop");
+  }
+}
+
+function toggleMotorArm() {
+  if (motorState.pendingArmToggle || !deviceState.connected || !motorState.requiresArm) return;
+
+  motorState.pendingArmToggle = true;
+  renderMotorStatus();
+  const sent = sendMotorCommand(motorState.armed ? "disarm_motors" : "arm_motors");
+  if (!sent) {
+    motorState.pendingArmToggle = false;
+    renderMotorStatus();
+  }
+}
+
+function setDriveSpeed(nextSpeed) {
+  driveState.speed = clampDriveSpeed(nextSpeed);
+  renderDriveSpeedControl();
+
+  if (driveState.activeKey && canDriveRobot()) {
+    sendActiveDriveCommand();
+  }
 }
 
 function setSecondaryCollapsed(collapsed) {
@@ -1188,13 +1455,21 @@ function swapPrimaryCamera() {
 }
 
 renderDeviceStatus();
+renderMotorStatus();
 renderCameraFeeds();
 renderCameraStreamControls();
+renderDriveSpeedControl();
 
 function setPressed(key, pressed) {
   const button = controlButtons.get(key);
   if (!button) return;
   button.classList.toggle("pressed", pressed);
+}
+
+function isInteractiveTarget(target) {
+  const element = target instanceof Element ? target : null;
+  if (!element) return false;
+  return Boolean(element.closest("input, textarea, select, button"));
 }
 
 function handleControlStart(key) {
@@ -1208,12 +1483,14 @@ function handleControlEnd(key) {
 }
 
 function onKeyDown(event) {
+  if (isInteractiveTarget(event.target)) return;
   if (!controlButtons.has(event.key)) return;
   event.preventDefault();
   handleControlStart(event.key);
 }
 
 function onKeyUp(event) {
+  if (isInteractiveTarget(event.target)) return;
   if (!controlButtons.has(event.key)) return;
   event.preventDefault();
   handleControlEnd(event.key);
@@ -1258,6 +1535,14 @@ function setupEvents() {
 
   elements.cameraFramerateSlider?.addEventListener("change", (event) => {
     sendCameraStreamFpsCommand(event.target.value);
+  });
+
+  elements.driveSpeedSlider?.addEventListener("input", (event) => {
+    setDriveSpeed(event.target.value);
+  });
+
+  elements.motorArmButton?.addEventListener("click", () => {
+    toggleMotorArm();
   });
 
   elements.switchCameraBtn.addEventListener("click", () => {

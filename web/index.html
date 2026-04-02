@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260401-3" />
+  <link rel="stylesheet" href="./styles.css?v=20260402-1" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -108,6 +108,23 @@
               aria-label="Camera stream frame rate"
             />
           </div>
+
+          <div class="settings-group">
+            <div class="settings-group-head">
+              <label class="settings-group-label" for="drive-speed-slider">Drive Speed</label>
+              <span id="drive-speed-value" class="settings-group-value">35%</span>
+            </div>
+            <input
+              id="drive-speed-slider"
+              class="settings-slider"
+              type="range"
+              min="0.05"
+              max="1"
+              step="0.05"
+              value="0.35"
+              aria-label="Drive throttle limit"
+            />
+          </div>
         </div>
 
         <button
@@ -127,6 +144,15 @@
           <div id="pi-temperature" class="pi-temperature">PI TEMP --.- F</div>
           <div id="pi-latency" class="pi-latency">LATENCY -- MS</div>
         </div>
+
+        <div id="motor-status-panel" class="motor-status-panel unavailable" aria-live="polite">
+          <div class="motor-status-head">
+            <span id="motor-state-label" class="motor-state-label">MOTORS OFFLINE</span>
+            <span id="motor-driver-label" class="motor-driver-label">--</span>
+          </div>
+          <div id="motor-detail-label" class="motor-detail-label">Waiting for motor status</div>
+          <button id="motor-arm-button" class="motor-arm-button" type="button">Arm Motors</button>
+        </div>
       </div>
 
       <div class="controls" aria-label="Arrow controls">
@@ -138,6 +164,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260401-3"></script>
+  <script src="./app.js?v=20260402-1"></script>
 </body>
 </html>

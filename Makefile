@@ -13,7 +13,7 @@ PI_LIDAR_ENABLED ?= 1
 PI_LIDAR_PORT ?= /dev/ttyUSB0
 PI_VENV_DIR ?= .venv
 
-.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pc-setup pc-backend pc-web pc-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-connect-echo pi-keys
+.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pc-setup pc-backend pc-web pc-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-run-esc pi-connect-echo pi-connect-esc pi-keys
 
 help:
 	@echo "Available targets:"
@@ -31,7 +31,9 @@ help:
 	@echo "  make pi-setup        - Install Raspberry Pi gateway deps"
 	@echo "  make pi-run          - Run Raspberry Pi gateway"
 	@echo "  make pi-run-echo     - Run Pi gateway in no-hardware echo mode"
+	@echo "  make pi-run-esc      - Run Pi gateway with direct Pi GPIO ESC control"
 	@echo "  make pi-connect-echo PC_IP=<ip> - Connect Pi echo mode to the PC backend with LiDAR streaming"
+	@echo "  make pi-connect-esc  PC_IP=<ip> - Connect Pi ESC mode to the PC backend with LiDAR streaming"
 	@echo "  make pi-keys         - Run keyboard-to-ESP serial bridge"
 	@echo "  make help   - Show this help message"
 
@@ -95,6 +97,9 @@ pi-run:
 pi-run-echo:
 	PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
 
+pi-run-esc:
+	PI_MOTOR_DRIVER=esc python3 pi/gateway.py
+
 pi-connect-echo:
 	@if [ -z "$(HOST_IP)" ]; then \
 		echo "Usage: make pi-connect-echo PC_IP=192.168.1.25"; \
@@ -106,6 +111,18 @@ pi-connect-echo:
 	fi
 	@. "$(PI_VENV_DIR)/bin/activate"; \
 	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_ECHO_ONLY=1 python3 pi/gateway.py
+
+pi-connect-esc:
+	@if [ -z "$(HOST_IP)" ]; then \
+		echo "Usage: make pi-connect-esc PC_IP=192.168.1.25"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PI_VENV_DIR)/bin/activate" ]; then \
+		echo "Missing $(PI_VENV_DIR)/bin/activate. Run: python3 -m venv $(PI_VENV_DIR) && make pi-setup"; \
+		exit 1; \
+	fi
+	@. "$(PI_VENV_DIR)/bin/activate"; \
+	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_DRIVER=esc python3 pi/gateway.py
 
 pi-keys:
 	python3 pi/arrow_serial_bridge.py

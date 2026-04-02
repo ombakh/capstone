@@ -9,8 +9,8 @@ The most reliable development path in this repo is:
 
 - PC: runs the backend and serves the web app
 - Raspberry Pi: runs `pi/gateway.py`
-- Web app: shows the two Pi camera feeds and sends arrow-key `drive` / `stop` commands
-- Pi gateway: receives commands over WebSocket and prints them in terminal echo mode
+- Web app: shows the two Pi camera feeds, exposes an arm/disarm control, and sends arrow-key drive commands
+- Pi gateway: can either print commands in echo mode or drive two ESCs directly from Pi GPIO with a neutral-hold watchdog
 
 That flow is useful before adding motor hardware.
 
@@ -32,6 +32,10 @@ code in this repository today.
 - Raspberry Pi 5:
   primary onboard computer that runs the edge gateway, owns the sensors, and
   connects back to the control backend over LAN or Tailscale.
+- Two brushless ESC signal leads:
+  can be driven directly by the Pi with RC-style servo pulses for left and
+  right drive motors. The default GPIO mapping is `GPIO18` for the left ESC and
+  `GPIO19` for the right ESC.
 - Two Raspberry Pi NOIR camera modules:
   attached to the Pi camera connectors and treated as the front and back robot
   cameras. The current default mapping is camera index `0` for the front feed and
@@ -48,7 +52,8 @@ code in this repository today.
 - `pi/gateway.py`:
   the main robot-side process. It connects to the backend as the robot device,
   publishes Pi temperature, camera status, live camera frames, and LiDAR data,
-  and forwards drive commands either to terminal echo mode or to the ESP32.
+  and now drives motors in one of three modes: terminal echo, direct Pi ESC
+  control, or ESP32 serial forwarding.
 - Raspberry Pi camera stack:
   the preferred live-camera path uses `rpicam-vid` or `libcamera-vid`; OpenCV is
   only a fallback when those tools are unavailable.
@@ -63,14 +68,15 @@ code in this repository today.
 
 ### Low-Level Control Status
 
-- The robot control path already exists end to end:
-  web UI -> backend -> Pi gateway -> optional ESP32.
-- The ESP32 firmware in this repo is still a placeholder:
-  it accepts `drive` and `stop` commands and maps them to LED behavior for
-  testing, but it does not yet drive physical motors.
-- Because of that, the currently proven configuration is still Pi echo mode:
-  arrow-key commands arrive on the Pi and are logged locally while cameras and
-  LiDAR continue streaming.
+- The robot control path now exists end to end for direct Pi GPIO ESC control:
+  web UI -> backend -> Pi gateway -> left/right ESC signal pulses.
+- The web UI does not drive live motors immediately:
+  it must receive `motor.status` from the Pi, you must arm the ESCs explicitly,
+  and held arrow keys are refreshed from the browser while the Pi applies its
+  own watchdog timeout and neutral fallback.
+- The optional ESP32 path still exists:
+  the firmware in `esp/` remains a placeholder LED/serial test target, but it
+  still accepts the same `drive` / `stop` command shape for development.
 
 ### Off-Robot Infrastructure
 
@@ -162,6 +168,110 @@ Motor command [echo-only] id=... drive direction=forward speed=0.55 durationMs=0
 Motor command [echo-only] id=... stop
 ```
 
+## Quick Start: PC + Pi ESC Mode
+
+This is the mode to use when the Raspberry Pi is directly generating ESC signal
+pulses instead of forwarding commands to an ESP32.
+
+### 1. Install the Pi Python dependencies
+
+From the repo root on the Pi:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+make pi-setup
+```
+
+The Python package alone is not enough for direct GPIO pulse output. Install and
+start the `pigpio` daemon on the Pi:
+
+```bash
+sudo apt-get install -y pigpio
+sudo systemctl enable --now pigpiod
+```
+
+### 2. Wire the ESC receiver leads to the Pi
+
+Default signal pins:
+
+- Left ESC signal -> `GPIO18` (physical pin `12`)
+- Right ESC signal -> `GPIO19` (physical pin `35`)
+- ESC grounds -> any Pi ground, for example physical pins `14`, `20`, or `39`
+
+Power rules:
+
+- Do not power the motors from the Pi.
+- Power each ESC from the robot battery or motor power bus.
+- The Pi and both ESCs must share ground.
+- Do not tie multiple ESC BEC 5V outputs together and do not backfeed 5V into a
+  Pi GPIO pin.
+- Recommended: use only the ESC signal wire and ESC ground wire to the Pi. Power
+  the Pi from its own regulated 5V supply.
+
+### 3. Start ESC mode on the Pi
+
+If the Pi is connecting to a PC-hosted backend:
+
+```bash
+make pi-connect-esc PC_IP=<pc-ip>
+```
+
+Or locally on the Pi without the helper target:
+
+```bash
+PI_MOTOR_DRIVER=esc python3 pi/gateway.py
+```
+
+### 4. Arm and drive from the web app
+
+- Open the web app on the PC.
+- Wait for the motor panel to show the Pi as connected.
+- Click `Arm Motors`.
+- Wait for the panel to change from `ARMING` to `ARMED`.
+- Use the arrow keys.
+
+The Pi keeps both ESCs at neutral on startup and when disarmed. While a key is
+held, the web app refreshes the `drive` command; if those refreshes stop, the Pi
+watchdog returns both ESCs to neutral automatically.
+
+## Pi ESC Wiring
+
+The direct Pi ESC path assumes ESCs that accept standard RC servo-style control
+pulses, not DShot-only ESCs.
+
+Default wiring:
+
+- Left ESC signal -> `GPIO18` / physical pin `12`
+- Right ESC signal -> `GPIO19` / physical pin `35`
+- ESC signal grounds -> any Pi ground
+- ESC main battery leads -> robot battery / motor power distribution
+- Brushless motor phase wires -> ESC motor outputs
+
+If your drivetrain is mounted so one side spins the opposite way for the same
+throttle command, set `ESC_LEFT_INVERTED=1` or `ESC_RIGHT_INVERTED=1` instead of
+rewiring motor phases at the Pi side.
+
+Default pulse behavior:
+
+- Bidirectional ESCs: neutral `1500 us`, forward above neutral, reverse below neutral
+- The Pi arms by holding `ESC_ARM_PULSE_US` for `ESC_ARM_DELAY_SEC`
+- The gateway clamps requested speed to `ESC_MAX_SPEED`
+- If command refresh stops for `ESC_WATCHDOG_TIMEOUT_MS`, both ESCs return to neutral
+
+If you are using forward-only airplane ESCs instead of bidirectional car ESCs,
+set at least:
+
+```bash
+PI_MOTOR_DRIVER=esc \
+ESC_BIDIRECTIONAL=0 \
+ESC_ARM_PULSE_US=1000 \
+ESC_NEUTRAL_PULSE_US=1000 \
+ESC_FORWARD_MIN_PULSE_US=1100 \
+ESC_FORWARD_MAX_PULSE_US=2000 \
+python3 pi/gateway.py
+```
+
 ## Network Notes
 
 - The Pi must be able to reach the PC backend on port `3000`.
@@ -184,8 +294,11 @@ Motor command [echo-only] id=... stop
 - `make pi-setup`: install Raspberry Pi gateway dependencies
 - `make pi-run`: run the Pi gateway with its default settings
 - `make pi-run-echo`: run the Pi gateway in local echo-only mode
+- `make pi-run-esc`: run the Pi gateway with direct ESC control from Pi GPIO
 - `make pi-connect-echo PC_IP=<ip>`: connect the Pi echo gateway to the PC backend
+- `make pi-connect-esc PC_IP=<ip>`: connect the Pi ESC gateway to the PC backend
 - `CAMERA_STREAM_HZ`, `CAMERA_FRAME_WIDTH`, `CAMERA_FRAME_HEIGHT`, `CAMERA_JPEG_QUALITY`: tune Pi camera streaming
+- `PI_MOTOR_DRIVER=esc`, `ESC_LEFT_GPIO`, `ESC_RIGHT_GPIO`, `ESC_MAX_SPEED`, `ESC_WATCHDOG_TIMEOUT_MS`: tune Pi ESC control
 - `make pi-keys`: send direct arrow-key serial input to an attached ESP32
 - `make help`: list available targets
 

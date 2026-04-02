@@ -570,6 +570,9 @@ class EscMotorController:
                 {"command": "drive", "direction": direction, "reason": self._last_error or "esc driver unavailable"},
             )
 
+        if direction not in {"forward", "reverse", "left", "right"}:
+            return ("invalid_drive_direction", {"command": "drive", "direction": direction})
+
         if self._arming_until is not None and not self._armed:
             return ("motor_arming", {"command": "drive", "direction": direction})
 
@@ -1415,6 +1418,7 @@ class PiGateway:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.esp = EspSerialBridge(config.esp_serial_port, config.esp_baud)
+        self.motor_controller = EscMotorController(config) if config.motor_driver == MOTOR_DRIVER_ESC else None
         self.cameras = CameraManager(
             front_index=config.camera_front_index,
             back_index=config.camera_back_index,
@@ -1433,6 +1437,8 @@ class PiGateway:
         )
         self._last_esp_connected: Optional[bool] = None
         self._last_lidar_connected: Optional[bool] = None
+        self._last_motor_status_signature = ""
+        self._last_motor_log_signature: Optional[str] = None
 
     @staticmethod
     def _format_command_value(value: Any) -> str:
@@ -1453,15 +1459,68 @@ class PiGateway:
             speed = params.get("speed", "unknown")
             return f"set_speed speed={self._format_command_value(speed)}"
 
+        if command_name in {"arm_motors", "disarm_motors"}:
+            return command_name
+
         return command_name
 
     def _log_motor_command(self, command_id: str, command_name: str, params: JsonDict, mode: str) -> None:
+        signature_payload = {"command": command_name, "params": params, "mode": mode}
+        signature = json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
+        if command_name == "drive" and signature == self._last_motor_log_signature:
+            return
+
         logging.info(
             "Motor command [%s] id=%s %s",
             mode,
             command_id or "-",
             self._describe_motor_command(command_name, params),
         )
+        self._last_motor_log_signature = signature if command_name == "drive" else None
+
+    def _motor_status_payload(self) -> JsonDict:
+        if self.config.motor_driver == MOTOR_DRIVER_ESC and self.motor_controller is not None:
+            self.motor_controller.connect()
+            return self.motor_controller.status()
+
+        if self.config.motor_driver == MOTOR_DRIVER_ESP:
+            esp_available = self.esp.connected() or self.esp.connect()
+            return {
+                "driver": MOTOR_DRIVER_ESP,
+                "driverAvailable": esp_available,
+                "requiresArm": False,
+                "armed": esp_available,
+                "arming": False,
+                "readyForDrive": esp_available,
+                "serialPort": self.config.esp_serial_port,
+                "maxSpeed": 1.0,
+                "lastError": None if esp_available else "ESP serial bridge unavailable",
+            }
+
+        return {
+            "driver": MOTOR_DRIVER_ECHO,
+            "driverAvailable": True,
+            "requiresArm": False,
+            "armed": True,
+            "arming": False,
+            "readyForDrive": True,
+            "maxSpeed": 1.0,
+            "lastError": None,
+        }
+
+    async def _publish_motor_status_if_changed(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        *,
+        force: bool = False,
+    ) -> None:
+        payload = self._motor_status_payload()
+        signature = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        if not force and signature == self._last_motor_status_signature:
+            return
+
+        self._last_motor_status_signature = signature
+        await self._send_event(ws, event_type="motor.status", payload=payload)
 
     async def run_forever(self) -> None:
         self.cameras.start()
@@ -1485,6 +1544,7 @@ class PiGateway:
                 payload={
                     "deviceId": self.config.device_id,
                     "espSerialPort": self.config.esp_serial_port,
+                    "motorDriver": self.config.motor_driver,
                     "motorEcho": self.config.motor_echo,
                     "motorEchoOnly": self.config.motor_echo_only,
                     "cameraIndexes": [self.config.camera_front_index, self.config.camera_back_index],
@@ -1495,11 +1555,13 @@ class PiGateway:
             )
             await self._publish_temperature(ws)
             await self._send_event(ws, event_type="camera.status", payload=self.cameras.snapshot())
+            await self._publish_motor_status_if_changed(ws, force=True)
 
             tasks = [
                 asyncio.create_task(self._recv_loop(ws), name="recv_loop"),
                 asyncio.create_task(self._heartbeat_loop(ws), name="heartbeat_loop"),
                 asyncio.create_task(self._esp_loop(ws), name="esp_loop"),
+                asyncio.create_task(self._motor_loop(ws), name="motor_loop"),
                 asyncio.create_task(self._camera_status_loop(ws), name="camera_status_loop"),
                 asyncio.create_task(self._camera_frame_loop(ws), name="camera_frame_loop"),
                 asyncio.create_task(self._lidar_loop(ws), name="lidar_loop"),
@@ -1591,17 +1653,87 @@ class PiGateway:
         if not isinstance(params, dict):
             params = {}
 
-        if command_name in {"drive", "stop", "set_speed"}:
-            if self.config.motor_echo or self.config.motor_echo_only:
-                mode = "echo-only" if self.config.motor_echo_only else "echo+serial"
-                self._log_motor_command(command_id, command_name, params, mode)
-
-            if self.config.motor_echo_only:
+        if command_name in {"arm_motors", "disarm_motors", "motor_status"}:
+            if command_name == "motor_status":
+                await self._publish_motor_status_if_changed(ws, force=True)
                 await self._send_ack(
                     ws,
                     command_id=command_id,
-                    status="echoed_to_terminal",
-                    details={"command": command_name, "mode": "echo-only"},
+                    status="motor_status_sent",
+                    details={"command": command_name},
+                )
+                return
+
+            if self.config.motor_driver != MOTOR_DRIVER_ESC or self.motor_controller is None:
+                await self._send_ack(
+                    ws,
+                    command_id=command_id,
+                    status="motor_driver_does_not_require_arming",
+                    details={"command": command_name, "driver": self.config.motor_driver},
+                )
+                return
+
+            if self.config.motor_echo:
+                self._log_motor_command(command_id, command_name, params, "esc")
+
+            if command_name == "arm_motors":
+                status, details = self.motor_controller.begin_arm()
+            else:
+                status, details = self.motor_controller.disarm(reason="manual")
+
+            await self._publish_motor_status_if_changed(ws, force=True)
+            await self._send_ack(ws, command_id=command_id, status=status, details=details)
+            return
+
+        if command_name in {"drive", "stop", "set_speed"}:
+            if self.config.motor_echo or self.config.motor_echo_only:
+                mode = "echo-only" if self.config.motor_driver == MOTOR_DRIVER_ECHO else f"echo+{self.config.motor_driver}"
+                self._log_motor_command(command_id, command_name, params, mode)
+
+            if self.config.motor_driver == MOTOR_DRIVER_ECHO:
+                if command_name != "drive":
+                    await self._send_ack(
+                        ws,
+                        command_id=command_id,
+                        status="echoed_to_terminal",
+                        details={"command": command_name, "mode": "echo-only"},
+                    )
+                return
+
+            if self.config.motor_driver == MOTOR_DRIVER_ESC and self.motor_controller is not None:
+                if command_name == "stop":
+                    status, details = self.motor_controller.stop(reason="commanded_stop")
+                    await self._publish_motor_status_if_changed(ws, force=True)
+                    await self._send_ack(ws, command_id=command_id, status=status, details=details)
+                    return
+
+                if command_name == "drive":
+                    speed_value = params.get("speed", 0.0)
+                    duration_value = params.get("durationMs", 0)
+                    try:
+                        parsed_speed = float(speed_value)
+                    except (TypeError, ValueError):
+                        parsed_speed = 0.0
+                    try:
+                        parsed_duration_ms = int(duration_value)
+                    except (TypeError, ValueError):
+                        parsed_duration_ms = 0
+
+                    status, details = self.motor_controller.apply_drive(
+                        direction=str(params.get("direction", "")).strip().lower(),
+                        speed=parsed_speed,
+                        duration_ms=parsed_duration_ms,
+                    )
+                    await self._publish_motor_status_if_changed(ws)
+                    if status != "drive_applied":
+                        await self._send_ack(ws, command_id=command_id, status=status, details=details)
+                    return
+
+                await self._send_ack(
+                    ws,
+                    command_id=command_id,
+                    status="unsupported_motor_command",
+                    details={"command": command_name, "driver": self.config.motor_driver},
                 )
                 return
 
@@ -1614,12 +1746,14 @@ class PiGateway:
                     "timestamp": now_iso(),
                 }
             )
-            await self._send_ack(
-                ws,
-                command_id=command_id,
-                status="forwarded_to_esp" if forwarded else "esp_unavailable",
-                details={"command": command_name},
-            )
+            await self._publish_motor_status_if_changed(ws)
+            if command_name != "drive" or not forwarded:
+                await self._send_ack(
+                    ws,
+                    command_id=command_id,
+                    status="forwarded_to_esp" if forwarded else "esp_unavailable",
+                    details={"command": command_name},
+                )
             return
 
         if command_name == "ping":
@@ -1750,16 +1884,17 @@ class PiGateway:
     async def _heartbeat_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
             await asyncio.sleep(self.config.heartbeat_interval_sec)
-            esp_connected = False if self.config.motor_echo_only else self.esp.connected() or self.esp.connect()
+            esp_connected = False if self.config.motor_driver != MOTOR_DRIVER_ESP else self.esp.connected() or self.esp.connect()
             await self._send_json(ws, {"type": "pi:heartbeat"})
             await self._publish_esp_connection_if_changed(ws, esp_connected)
+            await self._publish_motor_status_if_changed(ws)
 
             lidar_status = self.lidar.status()
             await self._publish_lidar_connection_if_changed(ws, lidar_status)
             await self._publish_temperature(ws)
 
     async def _esp_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
-        if self.config.motor_echo_only:
+        if self.config.motor_driver != MOTOR_DRIVER_ESP:
             return
 
         while True:
@@ -1770,6 +1905,15 @@ class PiGateway:
 
             event_type = f"esp.{str(esp_message.get('type', 'telemetry')).strip() or 'telemetry'}"
             await self._send_event(ws, event_type=event_type, payload=esp_message)
+
+    async def _motor_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+        interval_sec = self.motor_controller.update_interval_sec if self.motor_controller is not None else 0.5
+
+        while True:
+            await asyncio.sleep(interval_sec)
+            if self.motor_controller is not None:
+                self.motor_controller.tick()
+            await self._publish_motor_status_if_changed(ws)
 
     async def _camera_status_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while True:
@@ -1811,6 +1955,8 @@ class PiGateway:
 
     def close(self) -> None:
         self.esp.close()
+        if self.motor_controller is not None:
+            self.motor_controller.close()
         self.cameras.close()
         self.lidar.stop()
 

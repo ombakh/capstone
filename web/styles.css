@@ -12,6 +12,9 @@
   --status-red: #ff8e93;
   --status-red-border: rgba(255, 147, 152, 0.5);
   --status-red-bg: rgba(63, 18, 23, 0.74);
+  --status-amber: #ffd38f;
+  --status-amber-border: rgba(255, 211, 143, 0.46);
+  --status-amber-bg: rgba(72, 48, 15, 0.74);
 }
 
 * {
@@ -567,8 +570,89 @@ body {
   color: rgba(224, 240, 252, 0.78);
 }
 
+.motor-status-panel {
+  min-width: 182px;
+  padding: 0.72rem 0.82rem;
+  border-radius: 12px;
+  border: 1px solid var(--status-red-border);
+  background: var(--status-red-bg);
+  color: var(--text);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.34);
+}
+
+.motor-status-panel.armed {
+  border-color: var(--status-green-border);
+  background: var(--status-green-bg);
+}
+
+.motor-status-panel.arming {
+  border-color: var(--status-amber-border);
+  background: var(--status-amber-bg);
+}
+
+.motor-status-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.motor-state-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.motor-driver-label {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(224, 240, 252, 0.78);
+}
+
+.motor-detail-label {
+  margin-top: 0.34rem;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: rgba(240, 250, 255, 0.9);
+}
+
+.motor-arm-button {
+  width: 100%;
+  margin-top: 0.58rem;
+  padding: 0.58rem 0.7rem;
+  border-radius: 9px;
+  border: 1px solid rgba(214, 238, 255, 0.36);
+  background: rgba(8, 20, 33, 0.5);
+  color: rgba(244, 251, 255, 0.98);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.motor-arm-button:active {
+  transform: scale(0.98);
+}
+
+.motor-status-panel.armed .motor-arm-button {
+  border-color: rgba(255, 175, 181, 0.38);
+  background: rgba(57, 16, 22, 0.38);
+}
+
+.motor-arm-button:disabled {
+  opacity: 0.46;
+  cursor: default;
+  transform: none;
+}
+
 .settings-menu {
-  min-width: 176px;
+  min-width: 208px;
   padding: 0.58rem;
   border-radius: 10px;
   border: 1px solid rgba(214, 238, 255, 0.45);
@@ -740,6 +824,14 @@ body {
   border-color: var(--pressed-border);
 }
 
+.key:disabled {
+  opacity: 0.34;
+  cursor: default;
+  border-color: rgba(214, 238, 255, 0.14);
+  background: rgba(11, 18, 26, 0.12);
+  box-shadow: none;
+}
+
 @media (max-width: 960px) {
   .app.lidar-mode .lidar-side {
     width: calc(100vw - 2rem);
@@ -783,6 +875,11 @@ body {
   }
 
   .pi-status-panel {
+    min-width: 154px;
+    padding: 0.62rem 0.72rem;
+  }
+
+  .motor-status-panel {
     min-width: 154px;
     padding: 0.62rem 0.72rem;
   }
