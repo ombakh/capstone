@@ -43,10 +43,19 @@ try:
 except ImportError:  # pragma: no cover
     RPLidar = None
 
+try:
+    import pigpio  # type: ignore
+except ImportError:  # pragma: no cover
+    pigpio = None
+
 
 JsonDict = Dict[str, Any]
 
 CPU_TEMPERATURE_PATH = "/sys/class/thermal/thermal_zone0/temp"
+MOTOR_DRIVER_ECHO = "echo"
+MOTOR_DRIVER_ESP = "esp"
+MOTOR_DRIVER_ESC = "esc"
+SUPPORTED_MOTOR_DRIVERS = {MOTOR_DRIVER_ECHO, MOTOR_DRIVER_ESP, MOTOR_DRIVER_ESC}
 
 
 def now_iso() -> str:
@@ -81,6 +90,12 @@ def env_int_any(names: Tuple[str, ...], default: int) -> int:
     return default
 
 
+def env_choice(name: str, default: str, allowed: set[str]) -> str:
+    raw = os.getenv(name, default)
+    normalized = raw.strip().lower()
+    return normalized if normalized in allowed else default
+
+
 def close_quietly(resource: Any, method_name: str) -> None:
     method = getattr(resource, method_name, None)
     if callable(method):
@@ -97,8 +112,25 @@ class Config:
     device_token: str
     esp_serial_port: str
     esp_baud: int
+    motor_driver: str
     motor_echo: bool
     motor_echo_only: bool
+    esc_left_gpio: int
+    esc_right_gpio: int
+    esc_left_inverted: bool
+    esc_right_inverted: bool
+    esc_bidirectional: bool
+    esc_arm_pulse_us: int
+    esc_neutral_pulse_us: int
+    esc_forward_min_pulse_us: int
+    esc_forward_max_pulse_us: int
+    esc_reverse_min_pulse_us: int
+    esc_reverse_max_pulse_us: int
+    esc_arm_delay_sec: float
+    esc_watchdog_timeout_ms: int
+    esc_max_speed: float
+    esc_ramp_step_us: int
+    esc_update_hz: float
     camera_front_index: int
     camera_back_index: int
     heartbeat_interval_sec: float
@@ -127,7 +159,9 @@ class Config:
     def from_env() -> "Config":
         motor_echo = env_flag("PI_MOTOR_ECHO", default=True)
         motor_echo_only = env_flag("PI_MOTOR_ECHO_ONLY", default=False)
-        lidar_default_port = "/dev/ttyUSB0" if motor_echo_only else "/dev/ttyUSB1"
+        legacy_motor_driver = MOTOR_DRIVER_ECHO if motor_echo_only else MOTOR_DRIVER_ESP
+        motor_driver = env_choice("PI_MOTOR_DRIVER", legacy_motor_driver, SUPPORTED_MOTOR_DRIVERS)
+        lidar_default_port = "/dev/ttyUSB1" if motor_driver == MOTOR_DRIVER_ESP else "/dev/ttyUSB0"
 
         return Config(
             backend_ws_base=os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:3000"),
@@ -135,8 +169,25 @@ class Config:
             device_token=os.getenv("PI_DEVICE_TOKEN", ""),
             esp_serial_port=os.getenv("ESP_SERIAL_PORT", "/dev/ttyUSB0"),
             esp_baud=env_int("ESP_BAUD", 115200),
+            motor_driver=motor_driver,
             motor_echo=motor_echo,
             motor_echo_only=motor_echo_only,
+            esc_left_gpio=env_int("ESC_LEFT_GPIO", 18),
+            esc_right_gpio=env_int("ESC_RIGHT_GPIO", 19),
+            esc_left_inverted=env_flag("ESC_LEFT_INVERTED", default=False),
+            esc_right_inverted=env_flag("ESC_RIGHT_INVERTED", default=False),
+            esc_bidirectional=env_flag("ESC_BIDIRECTIONAL", default=True),
+            esc_arm_pulse_us=env_int("ESC_ARM_PULSE_US", 1500),
+            esc_neutral_pulse_us=env_int("ESC_NEUTRAL_PULSE_US", 1500),
+            esc_forward_min_pulse_us=env_int("ESC_FORWARD_MIN_PULSE_US", 1560),
+            esc_forward_max_pulse_us=env_int("ESC_FORWARD_MAX_PULSE_US", 1900),
+            esc_reverse_min_pulse_us=env_int("ESC_REVERSE_MIN_PULSE_US", 1440),
+            esc_reverse_max_pulse_us=env_int("ESC_REVERSE_MAX_PULSE_US", 1100),
+            esc_arm_delay_sec=env_float("ESC_ARM_DELAY_SEC", 3.0),
+            esc_watchdog_timeout_ms=env_int("ESC_WATCHDOG_TIMEOUT_MS", 650),
+            esc_max_speed=env_float("ESC_MAX_SPEED", 0.35),
+            esc_ramp_step_us=env_int("ESC_RAMP_STEP_US", 18),
+            esc_update_hz=env_float("ESC_UPDATE_HZ", 50.0),
             camera_front_index=env_int_any(("CAMERA_FRONT_INDEX", "CAMERA_LEFT_INDEX"), 0),
             camera_back_index=env_int_any(("CAMERA_BACK_INDEX", "CAMERA_RIGHT_INDEX"), 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
@@ -256,10 +307,367 @@ def clamp_camera_stream_hz(value: float) -> float:
     return clamp_float(value, CAMERA_STREAM_HZ_MIN, CAMERA_STREAM_HZ_MAX)
 
 
+def clamp_speed(value: float, fallback: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return clamp_float(parsed, 0.0, 1.0)
+
+
+def lerp_int(start: int, end: int, ratio: float) -> int:
+    bounded_ratio = clamp_float(ratio, 0.0, 1.0)
+    return int(round(start + (end - start) * bounded_ratio))
+
+
+def move_towards(current: int, target: int, maximum_step: int) -> int:
+    if current < target:
+        return min(target, current + maximum_step)
+    if current > target:
+        return max(target, current - maximum_step)
+    return target
+
+
 def find_camera_stream_command() -> Tuple[str, ...]:
     candidates = ("rpicam-vid", "libcamera-vid")
     available = [command for command in candidates if shutil.which(command)]
     return tuple(available)
+
+
+class EscMotorController:
+    def __init__(self, config: Config) -> None:
+        self.left_gpio = config.esc_left_gpio
+        self.right_gpio = config.esc_right_gpio
+        self.left_inverted = config.esc_left_inverted
+        self.right_inverted = config.esc_right_inverted
+        self.bidirectional = config.esc_bidirectional
+        self.arm_pulse_us = clamp_int(config.esc_arm_pulse_us, 900, 2100)
+        self.neutral_pulse_us = clamp_int(config.esc_neutral_pulse_us, 900, 2100)
+        self.forward_min_pulse_us = clamp_int(config.esc_forward_min_pulse_us, 900, 2100)
+        self.forward_max_pulse_us = clamp_int(config.esc_forward_max_pulse_us, 900, 2100)
+        self.reverse_min_pulse_us = clamp_int(config.esc_reverse_min_pulse_us, 900, 2100)
+        self.reverse_max_pulse_us = clamp_int(config.esc_reverse_max_pulse_us, 900, 2100)
+        self.arm_delay_sec = max(0.5, config.esc_arm_delay_sec)
+        self.watchdog_timeout_ms = clamp_int(config.esc_watchdog_timeout_ms, 100, 5000)
+        self.max_speed = clamp_speed(config.esc_max_speed, fallback=0.35)
+        self.ramp_step_us = clamp_int(config.esc_ramp_step_us, 1, 250)
+        self.update_interval_sec = 1.0 / clamp_float(config.esc_update_hz, 10.0, 200.0)
+
+        self._pi: Optional[Any] = None
+        self._last_connect_attempt = 0.0
+        self._connected = False
+        self._armed = False
+        self._arming_until: Optional[float] = None
+        self._current_left_pulse_us = self.neutral_pulse_us
+        self._current_right_pulse_us = self.neutral_pulse_us
+        self._target_left_pulse_us = self.neutral_pulse_us
+        self._target_right_pulse_us = self.neutral_pulse_us
+        self._command_deadline: Optional[float] = None
+        self._active_direction = "stop"
+        self._last_error = "" if pigpio is not None else "python package 'pigpio' is not installed"
+
+    def _can_attempt_connect(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_connect_attempt < 2.0:
+            return False
+        self._last_connect_attempt = now
+        return True
+
+    def _set_error(self, message: str) -> None:
+        self._last_error = message
+
+    def _disconnect(self) -> None:
+        pi_connection = self._pi
+        self._pi = None
+        self._connected = False
+        if pi_connection is not None:
+            close_quietly(pi_connection, "stop")
+
+    def _handle_driver_error(self, message: str, exc: Exception) -> None:
+        self._armed = False
+        self._arming_until = None
+        self._command_deadline = None
+        self._active_direction = "stop"
+        self._set_error(f"{message}: {exc}")
+        logging.warning("ESC driver error: %s", exc)
+        self._disconnect()
+
+    def connect(self) -> bool:
+        if pigpio is None:
+            self._connected = False
+            self._set_error("python package 'pigpio' is not installed")
+            return False
+
+        if self._pi is not None and getattr(self._pi, "connected", False):
+            self._connected = True
+            return True
+
+        if not self._can_attempt_connect():
+            return False
+
+        try:
+            pi_connection = pigpio.pi()
+        except Exception as exc:
+            self._set_error(f"unable to connect to pigpio daemon: {exc}")
+            self._connected = False
+            return False
+
+        if not getattr(pi_connection, "connected", False):
+            close_quietly(pi_connection, "stop")
+            self._set_error("pigpio daemon unavailable; run 'sudo pigpiod' on the Pi")
+            self._connected = False
+            return False
+
+        try:
+            pi_connection.set_mode(self.left_gpio, pigpio.OUTPUT)
+            pi_connection.set_mode(self.right_gpio, pigpio.OUTPUT)
+            pi_connection.set_servo_pulsewidth(self.left_gpio, self.neutral_pulse_us)
+            pi_connection.set_servo_pulsewidth(self.right_gpio, self.neutral_pulse_us)
+        except Exception as exc:
+            close_quietly(pi_connection, "stop")
+            self._set_error(f"unable to initialize ESC GPIO outputs: {exc}")
+            self._connected = False
+            return False
+
+        self._pi = pi_connection
+        self._connected = True
+        self._set_error("")
+        logging.info(
+            "ESC driver ready on GPIO %s (left) and GPIO %s (right)",
+            self.left_gpio,
+            self.right_gpio,
+        )
+        return True
+
+    def status(self) -> JsonDict:
+        arming = self._arming_until is not None and not self._armed
+        return {
+            "driver": MOTOR_DRIVER_ESC,
+            "driverAvailable": self._connected,
+            "requiresArm": True,
+            "armed": self._armed,
+            "arming": arming,
+            "readyForDrive": self._connected and self._armed and not arming,
+            "bidirectional": self.bidirectional,
+            "direction": self._active_direction,
+            "maxSpeed": round(self.max_speed, 2),
+            "watchdogTimeoutMs": self.watchdog_timeout_ms,
+            "pins": {
+                "leftSignalGpio": self.left_gpio,
+                "rightSignalGpio": self.right_gpio,
+            },
+            "pulseWidthsUs": {
+                "arm": self.arm_pulse_us,
+                "neutral": self.neutral_pulse_us,
+                "forwardMin": self.forward_min_pulse_us,
+                "forwardMax": self.forward_max_pulse_us,
+                "reverseMin": self.reverse_min_pulse_us,
+                "reverseMax": self.reverse_max_pulse_us,
+            },
+            "lastError": self._last_error or None,
+        }
+
+    def _apply_pulses(self, left_pulse_us: int, right_pulse_us: int) -> bool:
+        if not self.connect() or self._pi is None:
+            return False
+
+        try:
+            self._pi.set_servo_pulsewidth(self.left_gpio, left_pulse_us)
+            self._pi.set_servo_pulsewidth(self.right_gpio, right_pulse_us)
+        except Exception as exc:
+            self._handle_driver_error("failed to write ESC pulses", exc)
+            return False
+
+        self._current_left_pulse_us = left_pulse_us
+        self._current_right_pulse_us = right_pulse_us
+        return True
+
+    def _set_target_pulses(self, left_pulse_us: int, right_pulse_us: int) -> None:
+        self._target_left_pulse_us = left_pulse_us
+        self._target_right_pulse_us = right_pulse_us
+
+    def _pulse_for_signed_speed(self, signed_speed: float) -> int:
+        if abs(signed_speed) < 1e-6:
+            return self.neutral_pulse_us
+
+        if signed_speed > 0:
+            return lerp_int(
+                self.forward_min_pulse_us,
+                self.forward_max_pulse_us,
+                abs(signed_speed),
+            )
+
+        if not self.bidirectional:
+            return self.neutral_pulse_us
+
+        return lerp_int(
+            self.reverse_min_pulse_us,
+            self.reverse_max_pulse_us,
+            abs(signed_speed),
+        )
+
+    def _signed_speed_for_side(self, direction: str, side: str, speed_ratio: float) -> float:
+        side_inverted = self.left_inverted if side == "left" else self.right_inverted
+
+        if direction == "forward":
+            signed_speed = speed_ratio
+        elif direction == "reverse":
+            signed_speed = -speed_ratio if self.bidirectional else 0.0
+        elif direction == "left":
+            signed_speed = -speed_ratio if self.bidirectional and side == "left" else (speed_ratio if side == "right" else 0.0)
+        elif direction == "right":
+            signed_speed = speed_ratio if side == "left" else (-speed_ratio if self.bidirectional else 0.0)
+        else:
+            signed_speed = 0.0
+
+        return -signed_speed if side_inverted else signed_speed
+
+    def begin_arm(self) -> Tuple[str, JsonDict]:
+        if not self.connect():
+            return (
+                "esc_unavailable",
+                {"command": "arm_motors", "reason": self._last_error or "esc driver unavailable"},
+            )
+
+        if self._armed and self._arming_until is None:
+            return ("already_armed", {"command": "arm_motors"})
+
+        self._armed = False
+        self._arming_until = time.monotonic() + self.arm_delay_sec
+        self._command_deadline = None
+        self._active_direction = "stop"
+        self._set_target_pulses(self.arm_pulse_us, self.arm_pulse_us)
+        self._apply_pulses(self.arm_pulse_us, self.arm_pulse_us)
+        return (
+            "arming_started",
+            {
+                "command": "arm_motors",
+                "armDelaySec": round(self.arm_delay_sec, 2),
+                "armPulseUs": self.arm_pulse_us,
+            },
+        )
+
+    def disarm(self, reason: str = "manual") -> Tuple[str, JsonDict]:
+        self._armed = False
+        self._arming_until = None
+        self._command_deadline = None
+        self._active_direction = "stop"
+        self._set_target_pulses(self.neutral_pulse_us, self.neutral_pulse_us)
+        self._apply_pulses(self.neutral_pulse_us, self.neutral_pulse_us)
+        return ("motor_disarmed", {"command": "disarm_motors", "reason": reason})
+
+    def stop(self, reason: str = "manual_stop") -> Tuple[str, JsonDict]:
+        self._command_deadline = None
+        self._active_direction = "stop"
+        self._set_target_pulses(self.neutral_pulse_us, self.neutral_pulse_us)
+        self._apply_pulses(self.neutral_pulse_us, self.neutral_pulse_us)
+        return ("motor_stopped", {"command": "stop", "reason": reason})
+
+    def apply_drive(self, direction: str, speed: float, duration_ms: int) -> Tuple[str, JsonDict]:
+        if not self.connect():
+            return (
+                "esc_unavailable",
+                {"command": "drive", "direction": direction, "reason": self._last_error or "esc driver unavailable"},
+            )
+
+        if self._arming_until is not None and not self._armed:
+            return ("motor_arming", {"command": "drive", "direction": direction})
+
+        if not self._armed:
+            return ("motor_not_armed", {"command": "drive", "direction": direction})
+
+        requested_speed = clamp_speed(speed)
+        applied_speed = min(requested_speed, self.max_speed)
+        if applied_speed <= 0:
+            return self.stop(reason="zero_speed")
+
+        speed_ratio = applied_speed / self.max_speed if self.max_speed > 0 else 0.0
+        left_pulse_us = self._pulse_for_signed_speed(
+            self._signed_speed_for_side(direction, "left", speed_ratio)
+        )
+        right_pulse_us = self._pulse_for_signed_speed(
+            self._signed_speed_for_side(direction, "right", speed_ratio)
+        )
+        ttl_ms = clamp_int(duration_ms or self.watchdog_timeout_ms, 50, 5000)
+        self._set_target_pulses(left_pulse_us, right_pulse_us)
+        self._command_deadline = time.monotonic() + (ttl_ms / 1000.0)
+        self._active_direction = direction
+
+        if direction == "reverse" and not self.bidirectional:
+            self.stop(reason="reverse_disabled")
+            return (
+                "reverse_unsupported",
+                {
+                    "command": "drive",
+                    "direction": direction,
+                    "requestedSpeed": requested_speed,
+                    "appliedSpeed": 0.0,
+                },
+            )
+
+        return (
+            "drive_applied",
+            {
+                "command": "drive",
+                "direction": direction,
+                "requestedSpeed": round(requested_speed, 3),
+                "appliedSpeed": round(applied_speed, 3),
+                "durationMs": ttl_ms,
+            },
+        )
+
+    def tick(self) -> None:
+        now = time.monotonic()
+
+        if self._arming_until is not None and now >= self._arming_until:
+            self._arming_until = None
+            self._armed = True
+            self._active_direction = "stop"
+            self._set_target_pulses(self.neutral_pulse_us, self.neutral_pulse_us)
+            self._apply_pulses(self.neutral_pulse_us, self.neutral_pulse_us)
+
+        if self._command_deadline is not None and now >= self._command_deadline:
+            self.stop(reason="watchdog_timeout")
+
+        if not self._connected or self._pi is None:
+            return
+
+        next_left = move_towards(
+            self._current_left_pulse_us,
+            self._target_left_pulse_us,
+            self.ramp_step_us,
+        )
+        next_right = move_towards(
+            self._current_right_pulse_us,
+            self._target_right_pulse_us,
+            self.ramp_step_us,
+        )
+        if next_left == self._current_left_pulse_us and next_right == self._current_right_pulse_us:
+            return
+
+        self._apply_pulses(next_left, next_right)
+
+    def close(self) -> None:
+        pi_connection = self._pi
+        self._pi = None
+        self._connected = False
+        self._armed = False
+        self._arming_until = None
+        self._command_deadline = None
+        self._active_direction = "stop"
+        if pi_connection is None:
+            return
+
+        try:
+            pi_connection.set_servo_pulsewidth(self.left_gpio, self.neutral_pulse_us)
+            pi_connection.set_servo_pulsewidth(self.right_gpio, self.neutral_pulse_us)
+            time.sleep(0.2)
+            pi_connection.set_servo_pulsewidth(self.left_gpio, 0)
+            pi_connection.set_servo_pulsewidth(self.right_gpio, 0)
+        except Exception:
+            pass
+        finally:
+            close_quietly(pi_connection, "stop")
 
 
 class CameraWorker:
