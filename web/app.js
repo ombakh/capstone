@@ -31,6 +31,7 @@ const elements = {
   recordingToggleButton: document.getElementById("recording-toggle-button"),
   recordingPauseButton: document.getElementById("recording-pause-button"),
   recordingPauseIcon: document.getElementById("recording-pause-icon"),
+  recordingLoadingIndicator: document.getElementById("recording-loading-indicator"),
   recordingDownloadLink: document.getElementById("recording-download-link"),
   lidarCanvas: document.getElementById("lidar-canvas"),
   lidarStatus: document.getElementById("lidar-status"),
@@ -558,6 +559,7 @@ function renderRecordingPanel() {
     !elements.recordingToggleButton ||
     !elements.recordingPauseButton ||
     !elements.recordingPauseIcon ||
+    !elements.recordingLoadingIndicator ||
     !elements.recordingDownloadLink
   ) {
     return;
@@ -584,6 +586,7 @@ function renderRecordingPanel() {
   let pauseButtonVisible = false;
   let pauseButtonLabel = "Pause recording";
   let pauseButtonDisabled = recordingState.pendingAction;
+  let loadingVisible = false;
   let downloadVisible = false;
   let downloadEnabled = false;
   let downloadSession = null;
@@ -607,6 +610,7 @@ function renderRecordingPanel() {
     detailLabel = "Building fixed LiDAR playback with both cameras";
     recordButtonLabel = "Rendering...";
     recordButtonDisabled = true;
+    loadingVisible = true;
   } else if (readySession) {
     stateLabel = "Download Ready";
     detailLabel = `MP4 ready · ${formatRecordingDuration(readySession.durationMs)}`;
@@ -626,6 +630,7 @@ function renderRecordingPanel() {
 
   elements.recordingStateLabel.textContent = stateLabel;
   elements.recordingDetailLabel.textContent = detailLabel;
+  elements.recordingPanel.setAttribute("aria-label", `${stateLabel}. ${detailLabel}`);
 
   elements.recordingToggleButton.disabled = recordButtonDisabled;
   elements.recordingToggleButton.setAttribute("aria-label", recordButtonLabel);
@@ -639,6 +644,7 @@ function renderRecordingPanel() {
   elements.recordingPauseButton.querySelector(".sr-only")?.replaceChildren(document.createTextNode(pauseButtonLabel));
   elements.recordingPauseIcon.innerHTML = paused ? RECORDING_PLAY_ICON_SVG : RECORDING_PAUSE_ICON_SVG;
 
+  elements.recordingLoadingIndicator.classList.toggle("hidden", !loadingVisible);
   elements.recordingDownloadLink.classList.toggle("hidden", !downloadVisible);
   elements.recordingDownloadLink.classList.toggle("disabled", downloadVisible && !downloadEnabled);
   elements.recordingDownloadLink.setAttribute("aria-disabled", String(downloadVisible && !downloadEnabled));

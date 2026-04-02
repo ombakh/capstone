@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260402-3" />
+  <link rel="stylesheet" href="./styles.css?v=20260402-4" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -148,6 +148,7 @@
               </span>
               <span class="sr-only">Pause Recording</span>
             </button>
+            <span id="recording-loading-indicator" class="recording-loading-indicator hidden" aria-hidden="true"></span>
             <a id="recording-download-link" class="recording-action-button recording-secondary-button recording-download-link hidden" href="#" download aria-label="Download recording" title="Download recording">
               <span class="recording-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" focusable="false">
@@ -198,6 +199,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260402-3"></script>
+  <script src="./app.js?v=20260402-4"></script>
 </body>
 </html>

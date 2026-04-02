@@ -679,17 +679,6 @@ func drawCameraPanel(context: CGContext, rect: CGRect, label: String, image: CGI
       )
     }
   }
-
-  let labelRect = CGRect(x: rect.minX + 18, y: rect.maxY - 34, width: rect.width - 36, height: 20)
-  withGraphicsContext(context) {
-    drawText(
-      label,
-      in: labelRect,
-      font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-      color: NSColor(srgbRed: 0.93, green: 0.97, blue: 1, alpha: 0.94),
-      uppercase: true
-    )
-  }
 }
 
 func createVideoFormatDescription(width: Int32, height: Int32) throws -> CMFormatDescription {
@@ -811,52 +800,6 @@ func renderFrameJpegData(
   drawCameraPanel(context: context, rect: layout.frontCameraRect, label: "Front Camera", image: frontImage)
   drawCameraPanel(context: context, rect: layout.backCameraRect, label: "Rear Camera", image: backImage)
   drawLidarMap(context: context, rect: layout.lidarMapRect, scan: lidarScan, timestampMs: elapsedMs)
-
-  withGraphicsContext(context) {
-    drawText(
-      "LiDAR Session Playback",
-      in: CGRect(x: layout.lidarCardRect.minX + 34, y: layout.lidarCardRect.maxY - 48, width: layout.lidarCardRect.width - 68, height: 24),
-      font: NSFont.systemFont(ofSize: 20, weight: .bold),
-      color: NSColor(srgbRed: 0.95, green: 0.98, blue: 1, alpha: 0.98)
-    )
-
-    let subtitle = "Fixed layout: LiDAR primary, front and rear cameras alongside"
-    drawText(
-      subtitle,
-      in: CGRect(x: layout.lidarCardRect.minX + 34, y: layout.lidarCardRect.maxY - 76, width: layout.lidarCardRect.width - 68, height: 18),
-      font: NSFont.systemFont(ofSize: 12, weight: .medium),
-      color: NSColor(srgbRed: 0.73, green: 0.86, blue: 0.96, alpha: 0.82)
-    )
-
-    let rangeText = "Range \(String(format: "%.1f", Double((lidarScan?.maxDistanceMm ?? 6000) / 1000))) m"
-    drawText(
-      rangeText,
-      in: CGRect(x: layout.lidarMapRect.minX, y: layout.lidarMapRect.minY - 28, width: layout.lidarMapRect.width, height: 18),
-      font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-      color: NSColor(srgbRed: 0.78, green: 0.97, blue: 0.86, alpha: 0.88),
-      alignment: .center,
-      uppercase: true
-    )
-
-    let elapsedLabel = "Elapsed \(formatDuration(elapsedMs))"
-    drawText(
-      elapsedLabel,
-      in: CGRect(x: layout.footerRect.minX, y: layout.footerRect.minY + 16, width: layout.footerRect.width / 2, height: 18),
-      font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-      color: NSColor(srgbRed: 0.94, green: 0.98, blue: 1, alpha: 0.9),
-      uppercase: true
-    )
-
-    let durationLabel = "Duration \(formatDuration(totalDurationMs))"
-    drawText(
-      durationLabel,
-      in: CGRect(x: layout.footerRect.minX + (layout.footerRect.width / 2), y: layout.footerRect.minY + 16, width: layout.footerRect.width / 2, height: 18),
-      font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-      color: NSColor(srgbRed: 0.76, green: 0.9, blue: 1, alpha: 0.82),
-      alignment: .right,
-      uppercase: true
-    )
-  }
 
   guard let image = context.makeImage() else {
     throw RenderError.unableToCreateImage
