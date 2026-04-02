@@ -298,6 +298,29 @@ function applyOptimisticPauseStatus(summary) {
   };
 }
 
+function cloneRecordingSummary(summary) {
+  if (!isObject(summary)) return null;
+  return {
+    ...summary,
+    cameraFrameCounts: isObject(summary.cameraFrameCounts) ? { ...summary.cameraFrameCounts } : {}
+  };
+}
+
+function preserveRecordingStateInSnapshot(statePayload) {
+  if (!isObject(statePayload)) return statePayload;
+  if (!recordingState.pendingAction || !recordingState.optimisticPauseSessionId) {
+    return statePayload;
+  }
+
+  return {
+    ...statePayload,
+    recordings: {
+      ...(isObject(statePayload.recordings) ? statePayload.recordings : {}),
+      recent: recordingState.summaries.map((summary) => cloneRecordingSummary(summary)).filter(Boolean)
+    }
+  };
+}
+
 function formatRecordingDuration(durationMs) {
   const numericDurationMs = Number(durationMs);
   if (!Number.isFinite(numericDurationMs) || numericDurationMs <= 0) {
@@ -1217,7 +1240,7 @@ function applySerializableState(statePayload) {
 }
 
 function handleSnapshotMessage(message) {
-  applySerializableState(message.state);
+  applySerializableState(preserveRecordingStateInSnapshot(message.state));
 }
 
 function handlePiStatusMessage(message) {
@@ -1381,7 +1404,7 @@ async function syncBackendState() {
     if (!response.ok) return;
 
     const payload = await response.json();
-    applySerializableState(payload);
+    applySerializableState(preserveRecordingStateInSnapshot(payload));
   } catch {
     if (!backend.ws) {
       setDeviceConnected(false);
@@ -1697,12 +1720,10 @@ async function toggleRecordingPause() {
 
   const targetSession = recordingState.activeSession;
   const nextPaused = !isRecordingPaused(targetSession);
-  const previousStatus = targetSession.status;
   const nextStatus = nextPaused ? "paused" : "recording";
 
   recordingState.optimisticPauseSessionId = targetSession.id;
   recordingState.optimisticPauseStatus = nextStatus;
-  targetSession.status = nextStatus;
   recordingState.pendingAction = true;
   renderRecordingPanel();
 
@@ -1717,12 +1738,10 @@ async function toggleRecordingPause() {
     }
     recordingState.pendingAction = false;
     clearOptimisticPauseState();
-    targetSession.status = previousStatus;
     renderRecordingPanel();
   } catch (error) {
     recordingState.pendingAction = false;
     clearOptimisticPauseState();
-    targetSession.status = previousStatus;
     renderRecordingPanel();
     console.warn(`Unable to toggle recording pause: ${error instanceof Error ? error.message : String(error)}`);
   }
