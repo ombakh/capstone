@@ -1617,22 +1617,29 @@ async function toggleRecordingPause() {
   if (recordingState.pendingAction || !deviceState.connected || !recordingState.activeSession) return;
   if (isRecordingFinalizing(recordingState.activeSession)) return;
 
+  const targetSession = recordingState.activeSession;
+  const nextPaused = !isRecordingPaused(targetSession);
+  const previousStatus = targetSession.status;
+
+  targetSession.status = nextPaused ? "paused" : "recording";
   recordingState.pendingAction = true;
   renderRecordingPanel();
 
   try {
     const payload = await sendRecordingRequest("/api/recordings/pause", {
       deviceId: backend.deviceId,
-      paused: !isRecordingPaused(recordingState.activeSession)
+      paused: nextPaused
     });
     if (payload?.recording) {
       applyRecordingUpdate(payload.recording);
       return;
     }
     recordingState.pendingAction = false;
+    targetSession.status = previousStatus;
     renderRecordingPanel();
   } catch (error) {
     recordingState.pendingAction = false;
+    targetSession.status = previousStatus;
     renderRecordingPanel();
     console.warn(`Unable to toggle recording pause: ${error instanceof Error ? error.message : String(error)}`);
   }
