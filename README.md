@@ -1,7 +1,8 @@
 # Capstone
 
 Browser-based robot control app with directional controls, backend command routing,
-Pi telemetry, dual Pi camera streaming, and optional ESP32 serial bridging.
+Pi telemetry, dual Pi camera streaming, session recording for LiDAR plus both
+camera feeds, and optional ESP32 serial bridging.
 
 ## Current Tested Setup
 
@@ -85,7 +86,8 @@ code in this repository today.
   fan-out service for UI clients and the Pi.
 - Web frontend:
   currently served from the PC, shows the robot camera feeds and LiDAR view, and
-  sends drive commands to the robot.
+  sends drive commands to the robot. It can also start/stop backend-managed
+  recording sessions and download the resulting archive when packaging finishes.
 - Network dependency:
   the Pi must be able to reach the backend on port `3000`; the documented setup
   uses either the local network or Tailscale.

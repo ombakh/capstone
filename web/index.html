@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260402-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260402-2" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -127,6 +127,16 @@
           </div>
         </div>
 
+        <div id="recording-panel" class="recording-panel idle" aria-live="polite">
+          <div class="recording-head">
+            <span id="recording-state-label" class="recording-state-label">Recorder Idle</span>
+            <span id="recording-dot" class="recording-dot" aria-hidden="true"></span>
+          </div>
+          <div id="recording-detail-label" class="recording-detail-label">Not recording</div>
+          <button id="recording-toggle-button" class="recording-toggle-button" type="button">Start Recording</button>
+          <a id="recording-download-link" class="recording-download-link hidden" href="#" download>Download Recording</a>
+        </div>
+
         <button
           id="lidar-mode-button"
           class="lidar-mode-button"
@@ -164,6 +174,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260402-1"></script>
+  <script src="./app.js?v=20260402-2"></script>
 </body>
 </html>

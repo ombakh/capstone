@@ -25,6 +25,11 @@ const elements = {
   motorDriverLabel: document.getElementById("motor-driver-label"),
   motorDetailLabel: document.getElementById("motor-detail-label"),
   motorArmButton: document.getElementById("motor-arm-button"),
+  recordingPanel: document.getElementById("recording-panel"),
+  recordingStateLabel: document.getElementById("recording-state-label"),
+  recordingDetailLabel: document.getElementById("recording-detail-label"),
+  recordingToggleButton: document.getElementById("recording-toggle-button"),
+  recordingDownloadLink: document.getElementById("recording-download-link"),
   lidarCanvas: document.getElementById("lidar-canvas"),
   lidarStatus: document.getElementById("lidar-status"),
   lidarZoomOutBtn: document.getElementById("lidar-zoom-out"),
@@ -153,6 +158,13 @@ const motorState = {
   pendingArmToggle: false
 };
 
+const recordingState = {
+  summaries: [],
+  activeSession: null,
+  latestCompletedSession: null,
+  pendingAction: false
+};
+
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -216,6 +228,27 @@ function canDriveRobot() {
   if (!motorState.driverAvailable) return false;
   if (motorState.requiresArm && (!motorState.armed || motorState.arming)) return false;
   return motorState.readyForDrive || (!motorState.requiresArm && motorState.driverAvailable);
+}
+
+function isRecordingActive(summary) {
+  return summary?.status === "recording";
+}
+
+function isRecordingFinalizing(summary) {
+  return summary?.status === "finalizing";
+}
+
+function isRecordingReady(summary) {
+  return summary?.status === "ready" && typeof summary.downloadUrl === "string" && summary.downloadUrl;
+}
+
+function formatRecordingStats(summary) {
+  if (!summary) return "Not recording";
+
+  const frontCount = Number(summary.cameraFrameCounts?.front || 0);
+  const backCount = Number(summary.cameraFrameCounts?.back || 0);
+  const lidarCount = Number(summary.lidarScanCount || 0);
+  return `Front ${frontCount} · Back ${backCount} · LiDAR ${lidarCount}`;
 }
 
 function renderCameraStreamControls() {
@@ -485,6 +518,75 @@ function renderMotorStatus() {
   renderDriveSpeedControl();
 }
 
+function renderRecordingPanel() {
+  if (
+    !elements.recordingPanel ||
+    !elements.recordingStateLabel ||
+    !elements.recordingDetailLabel ||
+    !elements.recordingToggleButton ||
+    !elements.recordingDownloadLink
+  ) {
+    return;
+  }
+
+  const activeSession = recordingState.activeSession;
+  const latestCompletedSession = recordingState.latestCompletedSession;
+  const active = isRecordingActive(activeSession);
+  const finalizing = isRecordingFinalizing(activeSession);
+  const readySession = isRecordingReady(latestCompletedSession) ? latestCompletedSession : null;
+  const failedSession = latestCompletedSession?.status === "error" ? latestCompletedSession : null;
+
+  elements.recordingPanel.classList.toggle("recording", active);
+  elements.recordingPanel.classList.toggle("finalizing", finalizing);
+  elements.recordingPanel.classList.toggle("ready", !active && !finalizing && Boolean(readySession));
+  elements.recordingPanel.classList.toggle("idle", !active && !finalizing && !readySession);
+
+  let stateLabel = "Recorder Idle";
+  let detailLabel = "Not recording";
+  let buttonLabel = "Start Recording";
+  let buttonDisabled = !deviceState.connected || recordingState.pendingAction;
+
+  if (activeSession && active) {
+    stateLabel = "Recording Live";
+    detailLabel = formatRecordingStats(activeSession);
+    buttonLabel = recordingState.pendingAction ? "Working..." : "Stop Recording";
+    buttonDisabled = recordingState.pendingAction;
+  } else if (activeSession && finalizing) {
+    stateLabel = "Preparing Download";
+    detailLabel = "Packaging camera frames and LiDAR";
+    buttonLabel = "Preparing...";
+    buttonDisabled = true;
+  } else if (readySession) {
+    stateLabel = "Session Ready";
+    detailLabel = formatRecordingStats(readySession);
+    buttonLabel = recordingState.pendingAction ? "Working..." : "Start New Recording";
+  } else if (failedSession) {
+    stateLabel = "Recording Failed";
+    detailLabel = failedSession.error || "Recording could not be packaged";
+    buttonLabel = recordingState.pendingAction ? "Working..." : "Start New Recording";
+  } else if (recordingState.pendingAction) {
+    stateLabel = "Recorder Busy";
+    detailLabel = "Applying recording request";
+    buttonLabel = "Working...";
+  }
+
+  elements.recordingStateLabel.textContent = stateLabel;
+  elements.recordingDetailLabel.textContent = detailLabel;
+  elements.recordingToggleButton.textContent = buttonLabel;
+  elements.recordingToggleButton.disabled = buttonDisabled;
+
+  if (readySession) {
+    elements.recordingDownloadLink.classList.remove("hidden");
+    elements.recordingDownloadLink.href = `${backend.apiBaseUrl}${readySession.downloadUrl}`;
+    const safeRecordingId = String(readySession.id || "recording").replace(/[^a-zA-Z0-9_-]+/g, "-");
+    elements.recordingDownloadLink.setAttribute("download", `${safeRecordingId}.tar.gz`);
+  } else {
+    elements.recordingDownloadLink.classList.add("hidden");
+    elements.recordingDownloadLink.removeAttribute("href");
+    elements.recordingDownloadLink.removeAttribute("download");
+  }
+}
+
 function clearPendingLatencyState() {
   latencyState.pendingByNonce.clear();
   latencyState.pendingByCommandId.clear();
@@ -548,11 +650,16 @@ function setDeviceConnected(connected) {
     motorState.maxSpeed = DEFAULT_DRIVE_SPEED;
     motorState.lastError = null;
     motorState.pendingArmToggle = false;
+    recordingState.summaries = [];
+    recordingState.activeSession = null;
+    recordingState.latestCompletedSession = null;
+    recordingState.pendingAction = false;
     stopAllDrive(false);
   }
   syncLatencySampling();
   renderDeviceStatus();
   renderMotorStatus();
+  renderRecordingPanel();
   renderCameraFeeds();
   renderCameraStreamControls();
 }
@@ -785,6 +892,53 @@ function extractLatestMotorStatus(events) {
   return null;
 }
 
+function normalizeRecordingSummary(summary) {
+  if (!isObject(summary)) return null;
+
+  return {
+    id: typeof summary.id === "string" ? summary.id : null,
+    deviceId: typeof summary.deviceId === "string" ? summary.deviceId : null,
+    status: typeof summary.status === "string" ? summary.status : "unknown",
+    startedAt: typeof summary.startedAt === "string" ? summary.startedAt : null,
+    endedAt: typeof summary.endedAt === "string" ? summary.endedAt : null,
+    totalCameraFrames: Number(summary.totalCameraFrames) || 0,
+    cameraFrameCounts: isObject(summary.cameraFrameCounts) ? { ...summary.cameraFrameCounts } : {},
+    lidarScanCount: Number(summary.lidarScanCount) || 0,
+    archiveFilename: typeof summary.archiveFilename === "string" ? summary.archiveFilename : null,
+    archiveSizeBytes: Number(summary.archiveSizeBytes) || 0,
+    error: typeof summary.error === "string" ? summary.error : null,
+    downloadUrl: typeof summary.downloadUrl === "string" ? summary.downloadUrl : null
+  };
+}
+
+function applyRecordingSummaries(summaries) {
+  const normalizedSummaries = Array.isArray(summaries)
+    ? summaries
+        .map((summary) => normalizeRecordingSummary(summary))
+        .filter((summary) => summary && summary.deviceId === backend.deviceId)
+        .sort((left, right) => new Date(right.startedAt || 0).getTime() - new Date(left.startedAt || 0).getTime())
+    : [];
+
+  recordingState.summaries = normalizedSummaries;
+  recordingState.activeSession = normalizedSummaries.find(
+    (summary) => summary.status === "recording" || summary.status === "finalizing"
+  ) || null;
+  recordingState.latestCompletedSession = normalizedSummaries.find(
+    (summary) => summary.status === "ready" || summary.status === "error"
+  ) || null;
+  recordingState.pendingAction = false;
+  renderRecordingPanel();
+}
+
+function applyRecordingUpdate(summary) {
+  const normalizedSummary = normalizeRecordingSummary(summary);
+  if (!normalizedSummary || normalizedSummary.deviceId !== backend.deviceId) return;
+
+  const nextSummaries = recordingState.summaries.filter((entry) => entry.id !== normalizedSummary.id);
+  nextSummaries.push(normalizedSummary);
+  applyRecordingSummaries(nextSummaries);
+}
+
 function applyCameraStatus(payload) {
   if (!isObject(payload)) return;
 
@@ -896,6 +1050,8 @@ function applySerializableState(statePayload) {
   if (temperaturePayload) {
     applyPiTemperature(temperaturePayload);
   }
+
+  applyRecordingSummaries(statePayload?.recordings?.recent);
 }
 
 function handleSnapshotMessage(message) {
@@ -1013,6 +1169,10 @@ function handleCameraFrameMessage(message) {
   applyCameraFrame(frame);
 }
 
+function handleRecordingStatusMessage(message) {
+  applyRecordingUpdate(message.recording);
+}
+
 function handleBackendMessage(message) {
   if (!isObject(message)) return;
 
@@ -1038,6 +1198,11 @@ function handleBackendMessage(message) {
 
   if (message.type === "camera:frame") {
     handleCameraFrameMessage(message);
+    return;
+  }
+
+  if (message.type === "recording:status") {
+    handleRecordingStatusMessage(message);
     return;
   }
 
@@ -1325,6 +1490,45 @@ function sendMotorCommand(command, params = {}) {
   return sent;
 }
 
+async function sendRecordingRequest(pathname, body) {
+  const response = await fetch(`${backend.apiBaseUrl}${pathname}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(typeof payload.error === "string" ? payload.error : `request failed (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function toggleRecording() {
+  if (recordingState.pendingAction || !deviceState.connected) return;
+
+  recordingState.pendingAction = true;
+  renderRecordingPanel();
+
+  try {
+    const pathname = recordingState.activeSession ? "/api/recordings/stop" : "/api/recordings/start";
+    const payload = await sendRecordingRequest(pathname, { deviceId: backend.deviceId });
+    if (payload?.recording) {
+      applyRecordingUpdate(payload.recording);
+      return;
+    }
+    recordingState.pendingAction = false;
+    renderRecordingPanel();
+  } catch (error) {
+    recordingState.pendingAction = false;
+    renderRecordingPanel();
+    console.warn(`Unable to toggle recording: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function clearDriveRepeatTimer() {
   if (!driveState.repeatTimer) return;
   window.clearInterval(driveState.repeatTimer);
@@ -1456,6 +1660,7 @@ function swapPrimaryCamera() {
 
 renderDeviceStatus();
 renderMotorStatus();
+renderRecordingPanel();
 renderCameraFeeds();
 renderCameraStreamControls();
 renderDriveSpeedControl();
@@ -1543,6 +1748,10 @@ function setupEvents() {
 
   elements.motorArmButton?.addEventListener("click", () => {
     toggleMotorArm();
+  });
+
+  elements.recordingToggleButton?.addEventListener("click", () => {
+    void toggleRecording();
   });
 
   elements.switchCameraBtn.addEventListener("click", () => {

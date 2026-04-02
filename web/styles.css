@@ -570,6 +570,144 @@ body {
   color: rgba(224, 240, 252, 0.78);
 }
 
+.recording-panel {
+  min-width: 196px;
+  padding: 0.76rem 0.84rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 160, 160, 0.34);
+  background:
+    radial-gradient(circle at 80% 18%, rgba(255, 114, 114, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(34, 9, 16, 0.94), rgba(16, 6, 11, 0.9));
+  color: var(--text);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.34);
+}
+
+.recording-panel.recording {
+  border-color: rgba(255, 128, 128, 0.56);
+  box-shadow: 0 14px 32px rgba(46, 5, 10, 0.54);
+}
+
+.recording-panel.finalizing {
+  border-color: var(--status-amber-border);
+  background:
+    radial-gradient(circle at 80% 18%, rgba(255, 208, 119, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(45, 28, 8, 0.94), rgba(21, 12, 5, 0.9));
+}
+
+.recording-panel.ready {
+  border-color: var(--status-green-border);
+  background:
+    radial-gradient(circle at 80% 18%, rgba(125, 247, 150, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(7, 30, 17, 0.94), rgba(5, 17, 12, 0.9));
+}
+
+.recording-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.recording-state-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recording-dot {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 999px;
+  background: rgba(255, 122, 122, 0.56);
+  box-shadow: 0 0 0 0 rgba(255, 122, 122, 0.26);
+}
+
+.recording-panel.recording .recording-dot {
+  background: #ff6b6b;
+  animation: recording-pulse 1.1s ease-out infinite;
+}
+
+.recording-panel.finalizing .recording-dot {
+  background: var(--status-amber);
+  box-shadow: 0 0 0 0.2rem rgba(255, 211, 143, 0.12);
+}
+
+.recording-panel.ready .recording-dot {
+  background: var(--status-green);
+  box-shadow: 0 0 0 0.2rem rgba(137, 240, 161, 0.12);
+}
+
+.recording-detail-label {
+  margin-top: 0.34rem;
+  min-height: 2rem;
+  font-size: 0.75rem;
+  line-height: 1.34;
+  color: rgba(243, 248, 255, 0.9);
+}
+
+.recording-toggle-button,
+.recording-download-link {
+  width: 100%;
+  margin-top: 0.62rem;
+  padding: 0.62rem 0.76rem;
+  border-radius: 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  text-align: center;
+  text-decoration: none;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease, opacity 0.12s ease;
+}
+
+.recording-toggle-button {
+  border: 1px solid rgba(255, 168, 168, 0.38);
+  background: linear-gradient(180deg, rgba(150, 24, 40, 0.96), rgba(109, 14, 29, 0.92));
+  color: rgba(255, 246, 246, 0.98);
+  cursor: pointer;
+}
+
+.recording-panel.recording .recording-toggle-button {
+  border-color: rgba(255, 210, 210, 0.48);
+  background: linear-gradient(180deg, rgba(255, 112, 112, 0.96), rgba(186, 28, 51, 0.94));
+}
+
+.recording-panel.ready .recording-toggle-button {
+  border-color: rgba(255, 168, 168, 0.24);
+}
+
+.recording-toggle-button:active,
+.recording-download-link:active {
+  transform: scale(0.985);
+}
+
+.recording-toggle-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+.recording-download-link {
+  border: 1px solid rgba(165, 235, 188, 0.34);
+  background: rgba(8, 28, 16, 0.54);
+  color: rgba(225, 255, 235, 0.98);
+}
+
+.recording-download-link.hidden {
+  display: none;
+}
+
+@keyframes recording-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.38);
+  }
+  100% {
+    box-shadow: 0 0 0 0.5rem rgba(255, 107, 107, 0);
+  }
+}
+
 .motor-status-panel {
   min-width: 182px;
   padding: 0.72rem 0.82rem;
@@ -880,6 +1018,11 @@ body {
   }
 
   .motor-status-panel {
+    min-width: 154px;
+    padding: 0.62rem 0.72rem;
+  }
+
+  .recording-panel {
     min-width: 154px;
     padding: 0.62rem 0.72rem;
   }
