@@ -88,8 +88,8 @@ body {
 }
 
 .app.lidar-mode .lidar-side {
-  width: min(56vw, 740px);
-  max-width: calc(100vw - clamp(280px, 31vw, 420px) - 3rem);
+  width: min(52vw, 760px);
+  max-width: calc(100vw - clamp(340px, 36vw, 560px) - 3rem);
   gap: 0.9rem;
 }
 
@@ -294,7 +294,8 @@ body {
   position: absolute;
   top: 0;
   left: calc(100% + 1rem);
-  width: clamp(280px, 31vw, 420px);
+  width: clamp(340px, 36vw, 560px);
+  gap: 0.82rem;
 }
 
 .camera-panel {
