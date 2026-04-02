@@ -1,5 +1,9 @@
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 
 import cors from "cors";
 import dotenv from "dotenv";
@@ -10,11 +14,18 @@ dotenv.config();
 
 const HTTP_ACCEPTED = 202;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_CONFLICT = 409;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+const HTTP_NOT_FOUND = 404;
 const HTTP_UNAUTHORIZED = 401;
 const WS_OPEN = 1;
 const WS_POLICY_VIOLATION = 1008;
 const WS_SERVICE_RESTART = 1012;
 const DRIVE_DIRECTIONS = new Set(["forward", "reverse", "left", "right", "stop"]);
+const RECORDING_STATUS_RECORDING = "recording";
+const RECORDING_STATUS_FINALIZING = "finalizing";
+const RECORDING_STATUS_READY = "ready";
+const RECORDING_STATUS_ERROR = "error";
 
 const config = {
   host: process.env.BACKEND_HOST || "0.0.0.0",
@@ -22,8 +33,12 @@ const config = {
   corsOrigins: process.env.BACKEND_CORS_ORIGINS || "*",
   piDeviceToken: process.env.PI_DEVICE_TOKEN || "",
   eventHistoryLimit: Number(process.env.EVENT_HISTORY_LIMIT || 300),
-  commandQueueLimit: Number(process.env.COMMAND_QUEUE_LIMIT || 100)
+  commandQueueLimit: Number(process.env.COMMAND_QUEUE_LIMIT || 100),
+  recordingsDir: path.resolve(process.env.BACKEND_RECORDINGS_DIR || path.join(process.cwd(), "recordings")),
+  recordingsHistoryLimit: Number(process.env.RECORDINGS_HISTORY_LIMIT || 25)
 };
+
+fs.mkdirSync(config.recordingsDir, { recursive: true });
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -41,11 +56,14 @@ const state = {
   recentEvents: [],
   devices: new Map(),
   commandQueues: new Map(),
-  cameraFrames: new Map()
+  cameraFrames: new Map(),
+  recordings: new Map(),
+  activeRecordingIdsByDevice: new Map()
 };
 
 const uiClients = new Set();
 const piClients = new Map();
+const recordingSessions = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -67,6 +85,230 @@ function getObjectOrEmpty(value) {
 
 function isSocketOpen(socket) {
   return socket?.readyState === WS_OPEN;
+}
+
+function safeFilenameFragment(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "item";
+}
+
+function toArchiveFilename(deviceId, startedAt, recordingId) {
+  const safeDeviceId = safeFilenameFragment(deviceId);
+  const safeStartedAt = safeFilenameFragment(startedAt.replace(/[:.]/g, "-"));
+  return `${safeDeviceId}-${safeStartedAt}-${recordingId.slice(0, 8)}.tar.gz`;
+}
+
+function toFrameFilename(frame) {
+  const safeCameraName = safeFilenameFragment(frame.cameraName || "camera");
+  const safeTimestamp = safeFilenameFragment(String(frame.capturedAt || nowIso()).replace(/[:.]/g, "-"));
+  const sequence = String(Math.max(0, Math.floor(Number(frame.sequence) || 0))).padStart(6, "0");
+  const extension = String(frame.mimeType || "").includes("jpeg") ? "jpg" : "bin";
+  return `${safeCameraName}-${sequence}-${safeTimestamp}.${extension}`;
+}
+
+function cloneRecordingSummary(summary) {
+  if (!summary) return null;
+  return {
+    ...summary,
+    cameraFrameCounts: { ...(summary.cameraFrameCounts || {}) }
+  };
+}
+
+function serializeRecordingSummary(summary) {
+  if (!summary) return null;
+
+  const clone = cloneRecordingSummary(summary);
+  delete clone.archivePath;
+  delete clone.sessionDir;
+  clone.downloadUrl = clone.status === RECORDING_STATUS_READY ? `/api/recordings/${clone.id}/download` : null;
+  return clone;
+}
+
+function listRecordingSummaries() {
+  return Array.from(state.recordings.values())
+    .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())
+    .slice(0, config.recordingsHistoryLimit)
+    .map(serializeRecordingSummary);
+}
+
+function getActiveRecordingId(deviceId) {
+  return state.activeRecordingIdsByDevice.get(deviceId) || null;
+}
+
+function getActiveRecordingSummary(deviceId) {
+  const recordingId = getActiveRecordingId(deviceId);
+  return recordingId ? state.recordings.get(recordingId) || null : null;
+}
+
+function broadcastRecordingStatus(summary) {
+  const recording = serializeRecordingSummary(summary);
+  if (!recording) return;
+  broadcastToUi({ type: "recording:status", recording });
+}
+
+function respondConflict(res, error) {
+  res.status(HTTP_CONFLICT).json({
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
+
+function respondNotFound(res, error) {
+  res.status(HTTP_NOT_FOUND).json({
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
+
+function respondServerError(res, error) {
+  res.status(HTTP_INTERNAL_SERVER_ERROR).json({
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
+
+class RecordingSession {
+  constructor(summary) {
+    this.summary = summary;
+    this.pendingWrite = Promise.resolve();
+    this.deviceDir = path.join(config.recordingsDir, safeFilenameFragment(summary.deviceId));
+    this.sessionDirName = `${safeFilenameFragment(summary.startedAt.replace(/[:.]/g, "-"))}-${summary.id.slice(0, 8)}`;
+    this.sessionDir = path.join(this.deviceDir, this.sessionDirName);
+    this.archivePath = path.join(this.deviceDir, toArchiveFilename(summary.deviceId, summary.startedAt, summary.id));
+    this.lidarPath = path.join(this.sessionDir, "lidar.ndjson");
+    this.manifestPath = path.join(this.sessionDir, "manifest.json");
+    this.cameraMetadataPaths = new Map();
+    this.cameraDirectoryPaths = new Map();
+  }
+
+  async initialize() {
+    await fsp.mkdir(this.sessionDir, { recursive: true });
+    await fsp.mkdir(path.join(this.sessionDir, "cameras"), { recursive: true });
+    await this.writeManifest();
+  }
+
+  queueWrite(task) {
+    const nextTask = this.pendingWrite.then(task);
+    this.pendingWrite = nextTask.catch((error) => {
+      this.summary.status = RECORDING_STATUS_ERROR;
+      this.summary.error = error instanceof Error ? error.message : String(error);
+      this.summary.endedAt = this.summary.endedAt || nowIso();
+      state.activeRecordingIdsByDevice.delete(this.summary.deviceId);
+      recordingSessions.delete(this.summary.id);
+      broadcastRecordingStatus(this.summary);
+    });
+    return nextTask;
+  }
+
+  async ensureCameraPaths(cameraName) {
+    if (!this.cameraDirectoryPaths.has(cameraName)) {
+      const safeCameraName = safeFilenameFragment(cameraName);
+      const cameraDir = path.join(this.sessionDir, "cameras", safeCameraName);
+      const metadataPath = path.join(this.sessionDir, `camera-${safeCameraName}.ndjson`);
+      await fsp.mkdir(cameraDir, { recursive: true });
+      this.cameraDirectoryPaths.set(cameraName, cameraDir);
+      this.cameraMetadataPaths.set(cameraName, metadataPath);
+    }
+
+    return {
+      cameraDir: this.cameraDirectoryPaths.get(cameraName),
+      metadataPath: this.cameraMetadataPaths.get(cameraName)
+    };
+  }
+
+  async recordLidarScan(event) {
+    if (event.eventType !== "lidar.scan") return;
+
+    const line = `${JSON.stringify({
+      timestamp: event.timestamp,
+      receivedAt: event.receivedAt,
+      payload: event.payload
+    })}\n`;
+
+    this.summary.lidarScanCount += 1;
+    this.summary.updatedAt = nowIso();
+    await this.queueWrite(() => fsp.appendFile(this.lidarPath, line, "utf8"));
+  }
+
+  async recordCameraFrame(frame) {
+    const jpegBuffer = Buffer.from(frame.jpegBase64, "base64");
+
+    this.summary.totalCameraFrames += 1;
+    this.summary.cameraFrameCounts[frame.cameraName] = (this.summary.cameraFrameCounts[frame.cameraName] || 0) + 1;
+    this.summary.updatedAt = nowIso();
+
+    await this.queueWrite(async () => {
+      const { cameraDir, metadataPath } = await this.ensureCameraPaths(frame.cameraName);
+      const filename = toFrameFilename(frame);
+      const filePath = path.join(cameraDir, filename);
+      const metadataLine = `${JSON.stringify({
+        cameraName: frame.cameraName,
+        capturedAt: frame.capturedAt,
+        sequence: frame.sequence,
+        width: frame.width,
+        height: frame.height,
+        mimeType: frame.mimeType,
+        file: path.relative(this.sessionDir, filePath)
+      })}\n`;
+
+      await fsp.writeFile(filePath, jpegBuffer);
+      await fsp.appendFile(metadataPath, metadataLine, "utf8");
+    });
+  }
+
+  async flush() {
+    await this.pendingWrite;
+  }
+
+  async writeManifest() {
+    const manifest = {
+      recording: serializeRecordingSummary(this.summary),
+      files: {
+        lidar: path.relative(this.sessionDir, this.lidarPath),
+        cameras: Object.fromEntries(
+          Array.from(this.cameraMetadataPaths.entries()).map(([cameraName, metadataPath]) => [
+            cameraName,
+            {
+              framesDirectory: path.relative(this.sessionDir, this.cameraDirectoryPaths.get(cameraName)),
+              metadata: path.relative(this.sessionDir, metadataPath)
+            }
+          ])
+        )
+      }
+    };
+
+    await fsp.writeFile(this.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  }
+
+  async buildArchive() {
+    await this.flush();
+    await this.writeManifest();
+    await new Promise((resolve, reject) => {
+      const child = spawn("tar", ["-czf", this.archivePath, "-C", this.deviceDir, this.sessionDirName], {
+        stdio: ["ignore", "ignore", "pipe"]
+      });
+
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(stderr.trim() || `tar exited with code ${code}`));
+      });
+    });
+
+    const archiveStats = await fsp.stat(this.archivePath);
+    this.summary.archiveFilename = path.basename(this.archivePath);
+    this.summary.archivePath = this.archivePath;
+    this.summary.archiveSizeBytes = archiveStats.size;
+    this.summary.status = RECORDING_STATUS_READY;
+    this.summary.updatedAt = nowIso();
+    await this.writeManifest();
+  }
 }
 
 function safeJsonSend(socket, payload) {
@@ -319,12 +561,22 @@ function serializableState() {
     startedAt: state.startedAt,
     devices: Array.from(state.devices.values()),
     recentEvents: state.recentEvents,
-    connectedUiClients: uiClients.size
+    connectedUiClients: uiClients.size,
+    recordings: {
+      recent: listRecordingSummaries()
+    }
   };
 }
 
 function handlePiEvent(event, source) {
   recordEvent(event);
+  const activeRecordingId = getActiveRecordingId(event.deviceId);
+  if (activeRecordingId) {
+    const session = recordingSessions.get(activeRecordingId);
+    if (session) {
+      void session.recordLidarScan(event);
+    }
+  }
   broadcastToUi({ type: "pi:event", source, event });
 }
 
@@ -443,6 +695,116 @@ app.post("/api/ui/drive", (req, res) => {
   }
 });
 
+app.post("/api/recordings/start", async (req, res) => {
+  try {
+    ensureObject(req.body, "recording");
+    const deviceId = String(req.body.deviceId || "").trim();
+    if (!deviceId) {
+      throw new Error("recording.deviceId is required");
+    }
+    if (getActiveRecordingSummary(deviceId)) {
+      respondConflict(res, "a recording is already active for this device");
+      return;
+    }
+
+    const summary = {
+      id: crypto.randomUUID(),
+      deviceId,
+      status: RECORDING_STATUS_RECORDING,
+      startedAt: nowIso(),
+      endedAt: null,
+      updatedAt: nowIso(),
+      totalCameraFrames: 0,
+      cameraFrameCounts: {},
+      lidarScanCount: 0,
+      archiveFilename: null,
+      archivePath: null,
+      archiveSizeBytes: 0,
+      error: null
+    };
+
+    const session = new RecordingSession(summary);
+    await session.initialize();
+    state.recordings.set(summary.id, summary);
+    state.activeRecordingIdsByDevice.set(deviceId, summary.id);
+    recordingSessions.set(summary.id, session);
+    broadcastRecordingStatus(summary);
+    respondAccepted(res, { recording: serializeRecordingSummary(summary) });
+  } catch (error) {
+    respondBadRequest(res, error);
+  }
+});
+
+async function finalizeRecordingSession(session) {
+  try {
+    await session.buildArchive();
+  } catch (error) {
+    session.summary.status = RECORDING_STATUS_ERROR;
+    session.summary.error = error instanceof Error ? error.message : String(error);
+    session.summary.updatedAt = nowIso();
+  } finally {
+    recordingSessions.delete(session.summary.id);
+    broadcastRecordingStatus(session.summary);
+  }
+}
+
+app.post("/api/recordings/stop", (req, res) => {
+  try {
+    ensureObject(req.body, "recording");
+    const deviceId = String(req.body.deviceId || "").trim();
+    if (!deviceId) {
+      throw new Error("recording.deviceId is required");
+    }
+
+    const summary = getActiveRecordingSummary(deviceId);
+    if (!summary) {
+      respondNotFound(res, "no active recording for this device");
+      return;
+    }
+
+    const session = recordingSessions.get(summary.id);
+    if (!session) {
+      respondServerError(res, "recording session missing");
+      return;
+    }
+
+    summary.status = RECORDING_STATUS_FINALIZING;
+    summary.endedAt = nowIso();
+    summary.updatedAt = nowIso();
+    state.activeRecordingIdsByDevice.delete(deviceId);
+    broadcastRecordingStatus(summary);
+    void finalizeRecordingSession(session);
+    respondAccepted(res, { recording: serializeRecordingSummary(summary) });
+  } catch (error) {
+    respondBadRequest(res, error);
+  }
+});
+
+app.get("/api/recordings/:recordingId/download", (req, res) => {
+  const recordingId = String(req.params.recordingId || "").trim();
+  const summary = state.recordings.get(recordingId);
+  if (!summary) {
+    respondNotFound(res, "recording not found");
+    return;
+  }
+  if (summary.status === RECORDING_STATUS_FINALIZING) {
+    respondConflict(res, "recording archive is still being prepared");
+    return;
+  }
+  if (summary.status !== RECORDING_STATUS_READY || !summary.archivePath) {
+    respondNotFound(res, "recording archive is not available");
+    return;
+  }
+  if (!fs.existsSync(summary.archivePath)) {
+    respondNotFound(res, "recording archive file is missing");
+    return;
+  }
+
+  res.setHeader("Content-Type", "application/gzip");
+  res.setHeader("Content-Disposition", `attachment; filename="${summary.archiveFilename}"`);
+  fs.createReadStream(summary.archivePath).pipe(res);
+});
+
 function sendSnapshot(socket) {
   safeJsonSend(socket, {
     type: "snapshot",
@@ -503,6 +865,13 @@ function handlePiSocketMessage(deviceId, message) {
     try {
       const frame = normalizeCameraFrame(message.frame || {}, deviceId);
       cacheCameraFrame(frame);
+      const activeRecordingId = getActiveRecordingId(frame.deviceId);
+      if (activeRecordingId) {
+        const session = recordingSessions.get(activeRecordingId);
+        if (session) {
+          void session.recordCameraFrame(frame);
+        }
+      }
       broadcastToUi({ type: "camera:frame", frame });
     } catch {
       // Invalid live camera frame payload is ignored on WS path.

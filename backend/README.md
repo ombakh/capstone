@@ -8,6 +8,8 @@ This service is the command broker for the project:
 - Pi gateways connect as `role=pi`
 - UI commands are validated, queued if needed, and forwarded to the target Pi
 - Pi events and acknowledgements are broadcast back to connected UI clients
+- The backend can record LiDAR scans and both camera streams into session folders
+  and package the finished session as a downloadable archive
 
 ## Run
 
@@ -37,6 +39,8 @@ when started through the root `Makefile`.
 - `PI_DEVICE_TOKEN` optional shared token for Pi auth
 - `EVENT_HISTORY_LIMIT` default: `300`
 - `COMMAND_QUEUE_LIMIT` default: `100`
+- `BACKEND_RECORDINGS_DIR` default: `<backend cwd>/recordings`
+- `RECORDINGS_HISTORY_LIMIT` default: `25`
 
 ## Health Check
 
@@ -65,6 +69,9 @@ can reach this endpoint before debugging the WebSocket path.
 - `POST /api/pi/event`: ingest Pi event payload
 - `POST /api/ui/command`: send command to a Pi device
 - `POST /api/ui/drive`: validated drive command helper endpoint
+- `POST /api/recordings/start`: begin backend-managed recording for a Pi device
+- `POST /api/recordings/stop`: stop and package an active recording
+- `GET /api/recordings/:recordingId/download`: download a finished recording archive
 
 ### `POST /api/pi/event` payload
 
@@ -103,6 +110,24 @@ can reach this endpoint before debugging the WebSocket path.
 }
 ```
 
+### `POST /api/recordings/start` payload
+
+```json
+{
+  "deviceId": "pi-01"
+}
+```
+
+The backend stores:
+
+- `lidar.ndjson`
+- `camera-front.ndjson` / `camera-back.ndjson`
+- JPEG frames under `cameras/front/` and `cameras/back/`
+- `manifest.json`
+
+When stopped, the backend packages the session as a `.tar.gz` archive and the
+web UI exposes a download button once the archive is ready.
+
 ## WebSocket
 
 Path: `/ws`
@@ -115,7 +140,7 @@ Message types:
 - Pi -> backend: `pi:event`, `pi:ack`, `pi:heartbeat`
 - Pi -> backend: `pi:camera_frame`
 - UI -> backend: `ui:command`
-- Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`, `camera:frame`
+- Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`, `camera:frame`, `recording:status`
 - Backend -> Pi: `ui:command`
 
 ## Common Development Topology
