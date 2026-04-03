@@ -643,6 +643,7 @@ body {
   background: transparent;
   box-shadow: none;
   filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.42));
+  touch-action: manipulation;
   transition: transform 0.12s ease, opacity 0.12s ease, filter 0.12s ease;
 }
 

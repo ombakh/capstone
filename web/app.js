@@ -166,7 +166,13 @@ const recordingState = {
   activeSession: null,
   latestCompletedSession: null,
   pendingAction: false,
-  pauseTransition: null
+  pauseTransition: null,
+  pauseRequestPending: false
+};
+
+const interactionState = {
+  lastRecordingTogglePointerAt: 0,
+  lastRecordingPausePointerAt: 0
 };
 
 const RECORDING_PAUSE_ICON_SVG = `
@@ -278,6 +284,7 @@ function isRecordingReady(summary) {
 
 function clearPendingPauseTransition() {
   recordingState.pauseTransition = null;
+  recordingState.pauseRequestPending = false;
 }
 
 function cloneRecordingSummary(summary) {
@@ -341,6 +348,15 @@ function buildRecordingSummaryLine(summary) {
   const backCount = Number(summary.cameraFrameCounts?.back || 0);
   const lidarCount = Number(summary.lidarScanCount || 0);
   return `${durationLabel} captured · F ${frontCount} · R ${backCount} · L ${lidarCount}`;
+}
+
+function getRecordingSummaryById(recordingId) {
+  if (!recordingId) return null;
+  return recordingState.summaries.find((summary) => summary.id === recordingId) || null;
+}
+
+function isRecordingSessionToggleable(summary) {
+  return summary?.status === "recording" || summary?.status === "paused";
 }
 
 function renderCameraStreamControls() {
@@ -641,10 +657,10 @@ function renderRecordingPanel() {
   let stateLabel = "Recorder Idle";
   let detailLabel = "LiDAR view MP4 recorder is idle";
   let recordButtonLabel = "Start recording";
-  let recordButtonDisabled = !deviceState.connected || recordingState.pendingAction;
+  let recordButtonDisabled = !deviceState.connected || recordingState.pendingAction || recordingState.pauseRequestPending;
   let pauseButtonVisible = false;
   let pauseButtonLabel = "Pause recording";
-  let pauseButtonDisabled = recordingState.pendingAction;
+  let pauseButtonDisabled = !deviceState.connected || recordingState.pendingAction;
   let loadingVisible = false;
   let downloadVisible = false;
   let downloadEnabled = false;
@@ -1091,15 +1107,9 @@ function applyRecordingSummaries(summaries) {
   ) || null;
 
   if (recordingState.pauseTransition) {
-    const pendingSummary =
-      normalizedSummaries.find((summary) => summary.id === recordingState.pauseTransition.sessionId) || null;
-    if (
-      !pendingSummary ||
-      pendingSummary.status === recordingState.pauseTransition.nextStatus ||
-      (pendingSummary.status !== "recording" && pendingSummary.status !== "paused")
-    ) {
+    const pendingSummary = getRecordingSummaryById(recordingState.pauseTransition.sessionId);
+    if (!pendingSummary || !isRecordingSessionToggleable(pendingSummary)) {
       clearPendingPauseTransition();
-      recordingState.pendingAction = false;
     }
   }
 
@@ -1686,8 +1696,77 @@ async function sendRecordingRequest(pathname, body) {
   return response.json();
 }
 
+async function flushPauseTransition() {
+  const transition = recordingState.pauseTransition;
+  if (!transition || recordingState.pauseRequestPending) return;
+
+  const targetSummary =
+    getRecordingSummaryById(transition.sessionId) ||
+    (recordingState.activeSession?.id === transition.sessionId ? recordingState.activeSession : null);
+
+  if (!isRecordingSessionToggleable(targetSummary)) {
+    clearPendingPauseTransition();
+    renderRecordingPanel();
+    return;
+  }
+
+  if (targetSummary.status === transition.nextStatus) {
+    clearPendingPauseTransition();
+    renderRecordingPanel();
+    return;
+  }
+
+  recordingState.pauseRequestPending = true;
+  const requestedStatus = transition.nextStatus;
+  let requestFailed = false;
+  renderRecordingPanel();
+
+  try {
+    const payload = await sendRecordingRequest("/api/recordings/pause", {
+      deviceId: backend.deviceId,
+      paused: requestedStatus === "paused"
+    });
+    if (payload?.recording) {
+      applyRecordingUpdate(payload.recording);
+    }
+  } catch (error) {
+    requestFailed = true;
+    console.warn(`Unable to toggle recording pause: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const currentTransition = recordingState.pauseTransition;
+  if (!currentTransition || currentTransition.sessionId !== transition.sessionId) {
+    recordingState.pauseRequestPending = false;
+    renderRecordingPanel();
+    return;
+  }
+
+  recordingState.pauseRequestPending = false;
+  const latestSummary = getRecordingSummaryById(currentTransition.sessionId);
+  if (!isRecordingSessionToggleable(latestSummary)) {
+    clearPendingPauseTransition();
+    renderRecordingPanel();
+    return;
+  }
+
+  if (latestSummary.status === currentTransition.nextStatus) {
+    clearPendingPauseTransition();
+    renderRecordingPanel();
+    return;
+  }
+
+  if (requestFailed) {
+    clearPendingPauseTransition();
+    renderRecordingPanel();
+    return;
+  }
+
+  renderRecordingPanel();
+  void flushPauseTransition();
+}
+
 async function toggleRecording() {
-  if (recordingState.pendingAction || !deviceState.connected) return;
+  if (recordingState.pendingAction || recordingState.pauseRequestPending || !deviceState.connected) return;
 
   recordingState.pendingAction = true;
   renderRecordingPanel();
@@ -1718,31 +1797,17 @@ async function toggleRecordingPause() {
   const nextPaused = !isRecordingPaused(targetSession);
   const nextStatus = nextPaused ? "paused" : "recording";
 
-  recordingState.pauseTransition = {
-    sessionId: targetSession.id,
-    nextStatus
-  };
-  recordingState.pendingAction = true;
-  renderRecordingPanel();
-
-  try {
-    const payload = await sendRecordingRequest("/api/recordings/pause", {
-      deviceId: backend.deviceId,
-      paused: nextPaused
-    });
-    if (payload?.recording) {
-      applyRecordingUpdate(payload.recording);
-      return;
-    }
-    recordingState.pendingAction = false;
-    clearPendingPauseTransition();
-    renderRecordingPanel();
-  } catch (error) {
-    recordingState.pendingAction = false;
-    clearPendingPauseTransition();
-    renderRecordingPanel();
-    console.warn(`Unable to toggle recording pause: ${error instanceof Error ? error.message : String(error)}`);
+  if (!recordingState.pauseTransition || recordingState.pauseTransition.sessionId !== targetSession.id) {
+    recordingState.pauseTransition = {
+      sessionId: targetSession.id,
+      nextStatus
+    };
+  } else {
+    recordingState.pauseTransition.nextStatus = nextStatus;
   }
+
+  renderRecordingPanel();
+  void flushPauseTransition();
 }
 
 function clearDriveRepeatTimer() {
@@ -1966,11 +2031,33 @@ function setupEvents() {
     toggleMotorArm();
   });
 
-  elements.recordingToggleButton?.addEventListener("click", () => {
+  elements.recordingToggleButton?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    interactionState.lastRecordingTogglePointerAt = performance.now();
     void toggleRecording();
   });
 
+  elements.recordingToggleButton?.addEventListener("click", () => {
+    if (performance.now() - interactionState.lastRecordingTogglePointerAt < 450) {
+      return;
+    }
+    void toggleRecording();
+  });
+
+  elements.recordingPauseButton?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    interactionState.lastRecordingPausePointerAt = performance.now();
+    void toggleRecordingPause();
+  });
+
   elements.recordingPauseButton?.addEventListener("click", () => {
+    if (performance.now() - interactionState.lastRecordingPausePointerAt < 450) {
+      return;
+    }
     void toggleRecordingPause();
   });
 
