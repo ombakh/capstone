@@ -166,8 +166,7 @@ const recordingState = {
   activeSession: null,
   latestCompletedSession: null,
   pendingAction: false,
-  optimisticPauseSessionId: null,
-  optimisticPauseStatus: null
+  pauseTransition: null
 };
 
 const RECORDING_PAUSE_ICON_SVG = `
@@ -251,12 +250,11 @@ function canDriveRobot() {
 function getEffectiveRecordingStatus(summary) {
   if (!summary) return null;
   if (
-    recordingState.optimisticPauseSessionId &&
-    recordingState.optimisticPauseStatus &&
-    summary.id === recordingState.optimisticPauseSessionId &&
+    recordingState.pauseTransition &&
+    summary.id === recordingState.pauseTransition.sessionId &&
     (summary.status === "recording" || summary.status === "paused")
   ) {
-    return recordingState.optimisticPauseStatus;
+    return recordingState.pauseTransition.nextStatus;
   }
 
   return summary.status || null;
@@ -278,24 +276,8 @@ function isRecordingReady(summary) {
   return summary?.status === "ready" && typeof summary.downloadUrl === "string" && summary.downloadUrl;
 }
 
-function clearOptimisticPauseState() {
-  recordingState.optimisticPauseSessionId = null;
-  recordingState.optimisticPauseStatus = null;
-}
-
-function applyOptimisticPauseStatus(summary) {
-  if (!summary) return summary;
-  if (!recordingState.optimisticPauseSessionId || !recordingState.optimisticPauseStatus) {
-    return summary;
-  }
-  if (summary.id !== recordingState.optimisticPauseSessionId) {
-    return summary;
-  }
-
-  return {
-    ...summary,
-    status: recordingState.optimisticPauseStatus
-  };
+function clearPendingPauseTransition() {
+  recordingState.pauseTransition = null;
 }
 
 function cloneRecordingSummary(summary) {
@@ -308,7 +290,18 @@ function cloneRecordingSummary(summary) {
 
 function preserveRecordingStateInSnapshot(statePayload) {
   if (!isObject(statePayload)) return statePayload;
-  if (!recordingState.pendingAction || !recordingState.optimisticPauseSessionId) {
+  if (!recordingState.pauseTransition) {
+    return statePayload;
+  }
+
+  const recentSummaries = Array.isArray(statePayload.recordings?.recent) ? statePayload.recordings.recent : null;
+  if (!recentSummaries) {
+    return statePayload;
+  }
+
+  const localSummary =
+    recordingState.summaries.find((summary) => summary.id === recordingState.pauseTransition.sessionId) || null;
+  if (!localSummary) {
     return statePayload;
   }
 
@@ -316,7 +309,14 @@ function preserveRecordingStateInSnapshot(statePayload) {
     ...statePayload,
     recordings: {
       ...(isObject(statePayload.recordings) ? statePayload.recordings : {}),
-      recent: recordingState.summaries.map((summary) => cloneRecordingSummary(summary)).filter(Boolean)
+      recent: recentSummaries.map((summary) => {
+        const normalizedSummary = normalizeRecordingSummary(summary);
+        if (!normalizedSummary || normalizedSummary.id !== localSummary.id) {
+          return summary;
+        }
+
+        return cloneRecordingSummary(localSummary);
+      })
     }
   };
 }
@@ -789,7 +789,7 @@ function setDeviceConnected(connected) {
     recordingState.activeSession = null;
     recordingState.latestCompletedSession = null;
     recordingState.pendingAction = false;
-    clearOptimisticPauseState();
+    clearPendingPauseTransition();
     stopAllDrive(false);
   }
   syncLatencySampling();
@@ -1067,7 +1067,7 @@ function mergeRecordingSummaryWithExisting(incomingSummary) {
   const existingSummary = recordingState.summaries.find((summary) => summary.id === incomingSummary.id) || null;
   if (!existingSummary) return incomingSummary;
 
-  return getRecordingSummaryUpdatedAtMs(existingSummary) > getRecordingSummaryUpdatedAtMs(incomingSummary)
+  return getRecordingSummaryUpdatedAtMs(existingSummary) >= getRecordingSummaryUpdatedAtMs(incomingSummary)
     ? existingSummary
     : incomingSummary;
 }
@@ -1081,35 +1081,26 @@ function applyRecordingSummaries(summaries) {
         .sort((left, right) => new Date(right.startedAt || 0).getTime() - new Date(left.startedAt || 0).getTime())
     : [];
 
-  const optimisticPauseSummary = recordingState.optimisticPauseSessionId
-    ? normalizedSummaries.find((summary) => summary.id === recordingState.optimisticPauseSessionId) || null
-    : null;
-  const optimisticPauseSummarySettled = Boolean(
-    optimisticPauseSummary &&
-    !["recording", "paused"].includes(optimisticPauseSummary.status)
-  );
-  const backendMatchedOptimisticPause = Boolean(
-    optimisticPauseSummary &&
-    recordingState.optimisticPauseStatus &&
-    optimisticPauseSummary.status === recordingState.optimisticPauseStatus
-  );
-  const mergedSummaries = normalizedSummaries.map((summary) => applyOptimisticPauseStatus(summary));
-
-  recordingState.summaries = mergedSummaries;
-  recordingState.activeSession = mergedSummaries.find(
-    (summary) => summary.status === "recording" || summary.status === "paused" || summary.status === "finalizing"
-  ) || null;
-  recordingState.latestCompletedSession = mergedSummaries.find(
+  recordingState.summaries = normalizedSummaries;
+  recordingState.activeSession = normalizedSummaries.find((summary) => {
+    const status = getEffectiveRecordingStatus(summary);
+    return status === "recording" || status === "paused" || status === "finalizing";
+  }) || null;
+  recordingState.latestCompletedSession = normalizedSummaries.find(
     (summary) => summary.status === "ready" || summary.status === "error"
   ) || null;
 
-  if (recordingState.optimisticPauseSessionId) {
-    if (backendMatchedOptimisticPause || optimisticPauseSummarySettled || !optimisticPauseSummary) {
-      clearOptimisticPauseState();
+  if (recordingState.pauseTransition) {
+    const pendingSummary =
+      normalizedSummaries.find((summary) => summary.id === recordingState.pauseTransition.sessionId) || null;
+    if (
+      !pendingSummary ||
+      pendingSummary.status === recordingState.pauseTransition.nextStatus ||
+      (pendingSummary.status !== "recording" && pendingSummary.status !== "paused")
+    ) {
+      clearPendingPauseTransition();
       recordingState.pendingAction = false;
     }
-  } else {
-    recordingState.pendingAction = false;
   }
 
   renderRecordingPanel();
@@ -1205,7 +1196,8 @@ function applyCameraFrame(frame) {
   renderCameraFeeds();
 }
 
-function applySerializableState(statePayload) {
+function applySerializableState(statePayload, options = {}) {
+  const { includeRecordings = true } = options;
   const latestEvents = statePayload?.recentEvents;
   const devices = Array.isArray(statePayload?.devices) ? statePayload.devices : [];
   const currentDevice = devices.find((device) => isObject(device) && device.deviceId === backend.deviceId);
@@ -1236,7 +1228,9 @@ function applySerializableState(statePayload) {
     applyPiTemperature(temperaturePayload);
   }
 
-  applyRecordingSummaries(statePayload?.recordings?.recent);
+  if (includeRecordings) {
+    applyRecordingSummaries(statePayload?.recordings?.recent);
+  }
 }
 
 function handleSnapshotMessage(message) {
@@ -1404,7 +1398,7 @@ async function syncBackendState() {
     if (!response.ok) return;
 
     const payload = await response.json();
-    applySerializableState(preserveRecordingStateInSnapshot(payload));
+    applySerializableState(preserveRecordingStateInSnapshot(payload), { includeRecordings: false });
   } catch {
     if (!backend.ws) {
       setDeviceConnected(false);
@@ -1702,6 +1696,8 @@ async function toggleRecording() {
     const pathname = recordingState.activeSession ? "/api/recordings/stop" : "/api/recordings/start";
     const payload = await sendRecordingRequest(pathname, { deviceId: backend.deviceId });
     if (payload?.recording) {
+      recordingState.pendingAction = false;
+      clearPendingPauseTransition();
       applyRecordingUpdate(payload.recording);
       return;
     }
@@ -1722,8 +1718,10 @@ async function toggleRecordingPause() {
   const nextPaused = !isRecordingPaused(targetSession);
   const nextStatus = nextPaused ? "paused" : "recording";
 
-  recordingState.optimisticPauseSessionId = targetSession.id;
-  recordingState.optimisticPauseStatus = nextStatus;
+  recordingState.pauseTransition = {
+    sessionId: targetSession.id,
+    nextStatus
+  };
   recordingState.pendingAction = true;
   renderRecordingPanel();
 
@@ -1737,11 +1735,11 @@ async function toggleRecordingPause() {
       return;
     }
     recordingState.pendingAction = false;
-    clearOptimisticPauseState();
+    clearPendingPauseTransition();
     renderRecordingPanel();
   } catch (error) {
     recordingState.pendingAction = false;
-    clearOptimisticPauseState();
+    clearPendingPauseTransition();
     renderRecordingPanel();
     console.warn(`Unable to toggle recording pause: ${error instanceof Error ? error.message : String(error)}`);
   }
