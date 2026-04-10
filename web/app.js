@@ -78,6 +78,13 @@ const DRIVE_KEY_TO_DIRECTION = {
   ArrowRight: "right"
 };
 
+const REAR_CAMERA_DIRECTION_MAP = {
+  forward: "reverse",
+  reverse: "forward",
+  left: "right",
+  right: "left"
+};
+
 const urlParams = new URLSearchParams(window.location.search);
 
 const state = {
@@ -431,6 +438,20 @@ function getPrimaryCameraName() {
 
 function getSecondaryCameraName() {
   return getPrimaryCameraName() === "front" ? "back" : "front";
+}
+
+function isRearCameraPerspectiveActive() {
+  return getPrimaryCameraName() === "back";
+}
+
+function getLidarAngleOffsetDeg() {
+  return isRearCameraPerspectiveActive() ? 180 : 0;
+}
+
+function getDriveDirectionForKey(key) {
+  const baseDirection = DRIVE_KEY_TO_DIRECTION[key];
+  if (!baseDirection) return null;
+  return isRearCameraPerspectiveActive() ? REAR_CAMERA_DIRECTION_MAP[baseDirection] : baseDirection;
 }
 
 function getCameraStatus(name) {
@@ -868,11 +889,13 @@ function normalizeLidarPoints(points) {
 }
 
 function projectVisibleLidarPoints(points, maxDistance, centerX, centerY, radius) {
+  const angleOffsetDeg = getLidarAngleOffsetDeg();
+
   return [...points]
     .sort((left, right) => left[0] - right[0])
     .filter(([angleDeg, distanceMm]) => distanceMm <= maxDistance)
     .map(([angleDeg, distanceMm]) => {
-      const angleRad = ((angleDeg - 90) * Math.PI) / 180;
+      const angleRad = ((angleDeg + angleOffsetDeg - 90) * Math.PI) / 180;
       const distanceRatio = Math.min(1, distanceMm / maxDistance);
       const pointRadius = distanceRatio * radius;
       const x = centerX + Math.cos(angleRad) * pointRadius;
@@ -1818,7 +1841,7 @@ function clearDriveRepeatTimer() {
 
 function sendActiveDriveCommand() {
   const activeKey = driveState.activeKey;
-  const direction = activeKey ? DRIVE_KEY_TO_DIRECTION[activeKey] : null;
+  const direction = activeKey ? getDriveDirectionForKey(activeKey) : null;
   if (!direction || !canDriveRobot()) return;
 
   sendDriveCommand("drive", {
@@ -1829,7 +1852,7 @@ function sendActiveDriveCommand() {
 }
 
 function startDrive(key) {
-  const direction = DRIVE_KEY_TO_DIRECTION[key];
+  const direction = getDriveDirectionForKey(key);
   if (!direction || driveState.activeKey === key || !canDriveRobot()) return;
 
   driveState.activeKey = key;
@@ -1937,6 +1960,11 @@ function swapPrimaryCamera() {
 
   state.primaryCameraName = secondaryCameraName;
   renderCameraFeeds();
+  renderMotorStatus();
+
+  if (driveState.activeKey && canDriveRobot()) {
+    sendActiveDriveCommand();
+  }
 }
 
 renderDeviceStatus();
