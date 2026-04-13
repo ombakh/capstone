@@ -56,6 +56,7 @@ const DRIVE_COMMAND_TTL_MS = 650;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
 const WEBRTC_RECONNECT_DELAY_MS = 1500;
+const WEBRTC_OFFER_REQUEST_TIMEOUT_MS = 5000;
 const WEBRTC_ICE_GATHERING_TIMEOUT_MS = 5000;
 const WEBRTC_STATS_INTERVAL_MS = 2000;
 const CAMERA_NAMES = ["front", "back"];
@@ -140,6 +141,7 @@ const webrtc = {
   trackCameraNamesByTrackId: new Map(),
   remoteTrackCount: 0,
   reconnectTimer: null,
+  offerRequestTimer: null,
   offerRequested: false,
   statsTimer: null,
   inboundStats: null,
@@ -1562,9 +1564,29 @@ function sendWebRtcSignal(payload) {
   return true;
 }
 
-function requestWebRtcOffer() {
+function clearWebRtcOfferRequestTimer() {
+  window.clearTimeout(webrtc.offerRequestTimer);
+  webrtc.offerRequestTimer = null;
+}
+
+function requestWebRtcOffer(reason = "request") {
   if (webrtc.offerRequested) return;
-  webrtc.offerRequested = sendWebRtcSignal({ type: "viewer:ready" });
+
+  const sent = sendWebRtcSignal({ type: "viewer:ready" });
+  webrtc.offerRequested = sent;
+  if (!sent) return;
+
+  console.info(`WebRTC offer requested reason=${reason}`);
+  clearWebRtcOfferRequestTimer();
+  webrtc.offerRequestTimer = window.setTimeout(() => {
+    if (!webrtc.offerRequested || webrtc.pc) return;
+
+    console.warn("WebRTC offer request timed out; requesting a fresh offer.");
+    webrtc.offerRequested = false;
+    if (webrtc.ws?.readyState === WebSocket.OPEN) {
+      requestWebRtcOffer("offer-timeout");
+    }
+  }, WEBRTC_OFFER_REQUEST_TIMEOUT_MS);
 }
 
 function resetWebRtcTrackMetadata() {
@@ -1833,6 +1855,7 @@ function clearWebRtcStream() {
 
 function closeWebRtcPeerConnection(clearStream = true) {
   webrtc.offerRequested = false;
+  clearWebRtcOfferRequestTimer();
   stopWebRtcStats();
   const pc = webrtc.pc;
   webrtc.pc = null;
@@ -1991,7 +2014,7 @@ function handleWebRtcStatus(message) {
 
   console.info(`WebRTC Pi signaling status=${message.status}`);
   if (message.status === "online") {
-    requestWebRtcOffer();
+    requestWebRtcOffer("pi-online");
     return;
   }
 
@@ -2002,7 +2025,7 @@ function handleWebRtcReady(message) {
   webrtc.viewerId = message.viewerId || webrtc.viewerId;
   console.info(`WebRTC signaling ready viewerId=${webrtc.viewerId || "-"} piConnected=${Boolean(message.piConnected)}`);
   if (message.piConnected) {
-    requestWebRtcOffer();
+    requestWebRtcOffer("signaling-ready");
   }
 }
 

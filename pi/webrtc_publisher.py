@@ -224,17 +224,22 @@ class WebRtcPublisher:
         while True:
             try:
                 await self._run_session()
+                logging.warning("WebRTC signaling session closed")
                 backoff = 1.0
             except Exception as exc:
                 logging.warning("WebRTC signaling session ended: %s", exc)
+            finally:
+                self.ws = None
                 await self._close_all_peers()
-                await asyncio.sleep(backoff)
-                backoff = min(self.config.reconnect_max_sec, backoff * 2.0)
+
+            await asyncio.sleep(backoff)
+            backoff = min(self.config.reconnect_max_sec, backoff * 2.0)
 
     async def _run_session(self) -> None:
         logging.info("Connecting to WebRTC signaling: %s", self.config.signaling_url)
         async with websockets.connect(self.config.signaling_url, ping_interval=20, ping_timeout=20) as ws:
             self.ws = ws
+            logging.info("WebRTC signaling connected")
             async for raw in ws:
                 message = parse_json_message(raw)
                 if message:
