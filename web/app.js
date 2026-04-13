@@ -57,6 +57,7 @@ const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
 const WEBRTC_RECONNECT_DELAY_MS = 1500;
 const WEBRTC_ICE_GATHERING_TIMEOUT_MS = 5000;
+const WEBRTC_STATS_INTERVAL_MS = 2000;
 const CAMERA_NAMES = ["front", "back"];
 const CAMERA_STREAM_FPS_MIN = 1;
 const CAMERA_STREAM_FPS_MAX = 12;
@@ -135,7 +136,10 @@ const webrtc = {
   pc: null,
   remoteStream: null,
   reconnectTimer: null,
-  offerRequested: false
+  offerRequested: false,
+  statsTimer: null,
+  inboundStats: null,
+  renderStats: null
 };
 
 const driveState = {
@@ -1497,6 +1501,148 @@ function requestWebRtcOffer() {
   webrtc.offerRequested = sendWebRtcSignal({ type: "viewer:ready" });
 }
 
+function formatNullableNumber(value, digits = 1) {
+  return Number.isFinite(value) ? value.toFixed(digits) : "unavailable";
+}
+
+function stopWebRtcStats() {
+  if (webrtc.statsTimer) {
+    window.clearInterval(webrtc.statsTimer);
+    webrtc.statsTimer = null;
+  }
+  if (
+    webrtc.renderStats?.callbackId &&
+    elements.video &&
+    typeof elements.video.cancelVideoFrameCallback === "function"
+  ) {
+    elements.video.cancelVideoFrameCallback(webrtc.renderStats.callbackId);
+  }
+  webrtc.inboundStats = null;
+  webrtc.renderStats = null;
+}
+
+function startWebRtcPeerStats(pc) {
+  if (webrtc.statsTimer) {
+    window.clearInterval(webrtc.statsTimer);
+  }
+
+  webrtc.inboundStats = null;
+  webrtc.statsTimer = window.setInterval(async () => {
+    if (webrtc.pc !== pc) return;
+
+    try {
+      const report = await pc.getStats();
+      let inbound = null;
+      report.forEach((stat) => {
+        if (stat.type === "inbound-rtp" && (!stat.kind || stat.kind === "video")) {
+          inbound = stat;
+        }
+      });
+      if (!inbound) return;
+
+      const now = performance.now();
+      const previous = webrtc.inboundStats;
+      const elapsedSec = previous ? Math.max(0.001, (now - previous.loggedAtMs) / 1000) : 0;
+
+      const framesDecodedDelta = previous ? (inbound.framesDecoded || 0) - (previous.framesDecoded || 0) : 0;
+      const bytesReceivedDelta = previous ? (inbound.bytesReceived || 0) - (previous.bytesReceived || 0) : 0;
+      const totalDecodeTimeDelta = previous ? (inbound.totalDecodeTime || 0) - (previous.totalDecodeTime || 0) : 0;
+      const jitterBufferDelayDelta = previous ? (inbound.jitterBufferDelay || 0) - (previous.jitterBufferDelay || 0) : 0;
+      const jitterBufferFramesDelta = previous
+        ? (inbound.jitterBufferEmittedCount || 0) - (previous.jitterBufferEmittedCount || 0)
+        : 0;
+
+      const receiveFps = previous ? framesDecodedDelta / elapsedSec : null;
+      const receiveKbps = previous ? (bytesReceivedDelta * 8) / elapsedSec / 1000 : null;
+      const decodeMsPerFrame = framesDecodedDelta > 0 ? (totalDecodeTimeDelta * 1000) / framesDecodedDelta : null;
+      const jitterBufferMs =
+        jitterBufferFramesDelta > 0 ? (jitterBufferDelayDelta * 1000) / jitterBufferFramesDelta : null;
+
+      console.info(
+        [
+          "WebRTC browser receive stats",
+          `receiveFps=${formatNullableNumber(receiveFps)}`,
+          `networkReceiveKbps=${formatNullableNumber(receiveKbps, 0)}`,
+          `decodeMsPerFrame=${formatNullableNumber(decodeMsPerFrame)}`,
+          `jitterBufferMs=${formatNullableNumber(jitterBufferMs)}`,
+          `framesDropped=${inbound.framesDropped ?? "unavailable"}`,
+          `packetsLost=${inbound.packetsLost ?? "unavailable"}`
+        ].join(" ")
+      );
+
+      webrtc.inboundStats = {
+        loggedAtMs: now,
+        framesDecoded: inbound.framesDecoded || 0,
+        bytesReceived: inbound.bytesReceived || 0,
+        totalDecodeTime: inbound.totalDecodeTime || 0,
+        jitterBufferDelay: inbound.jitterBufferDelay || 0,
+        jitterBufferEmittedCount: inbound.jitterBufferEmittedCount || 0
+      };
+    } catch (error) {
+      console.warn(`WebRTC browser stats unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, WEBRTC_STATS_INTERVAL_MS);
+}
+
+function startWebRtcRenderStats(video, stream) {
+  if (!video || typeof video.requestVideoFrameCallback !== "function") return;
+  if (webrtc.renderStats?.stream === stream) return;
+
+  if (webrtc.renderStats?.callbackId && typeof video.cancelVideoFrameCallback === "function") {
+    video.cancelVideoFrameCallback(webrtc.renderStats.callbackId);
+  }
+
+  webrtc.renderStats = {
+    stream,
+    lastLoggedAtMs: performance.now(),
+    lastPresentedFrames: 0,
+    callbackId: null
+  };
+
+  const onVideoFrame = (now, metadata) => {
+    if (video.srcObject !== stream) return;
+
+    const previous = webrtc.renderStats;
+    if (!previous || previous.stream !== stream) return;
+    const elapsedSec = Math.max(0.001, (now - previous.lastLoggedAtMs) / 1000);
+    const presentedFrames = Number(metadata.presentedFrames) || 0;
+    const renderedFrameDelta = Math.max(0, presentedFrames - previous.lastPresentedFrames);
+
+    if (now - previous.lastLoggedAtMs >= WEBRTC_STATS_INTERVAL_MS) {
+      const renderFps = renderedFrameDelta / elapsedSec;
+      const receiveToRenderMs =
+        Number.isFinite(metadata.receiveTime) && Number.isFinite(metadata.expectedDisplayTime)
+          ? metadata.expectedDisplayTime - metadata.receiveTime
+          : null;
+      const captureToRenderMs =
+        Number.isFinite(metadata.captureTime) && Number.isFinite(metadata.expectedDisplayTime)
+          ? metadata.expectedDisplayTime - metadata.captureTime
+          : null;
+      const renderQueueMs = Number.isFinite(metadata.expectedDisplayTime) ? metadata.expectedDisplayTime - now : null;
+      const processingMs = Number.isFinite(metadata.processingDuration) ? metadata.processingDuration * 1000 : null;
+
+      console.info(
+        [
+          "WebRTC browser render stats",
+          `renderFps=${formatNullableNumber(renderFps)}`,
+          `receiveToRenderMs=${formatNullableNumber(receiveToRenderMs)}`,
+          `captureToRenderMs=${formatNullableNumber(captureToRenderMs)}`,
+          `renderQueueMs=${formatNullableNumber(renderQueueMs)}`,
+          `processingMs=${formatNullableNumber(processingMs)}`,
+          `videoSize=${metadata.width || video.videoWidth || "-"}x${metadata.height || video.videoHeight || "-"}`
+        ].join(" ")
+      );
+
+      previous.lastLoggedAtMs = now;
+      previous.lastPresentedFrames = presentedFrames;
+    }
+
+    previous.callbackId = video.requestVideoFrameCallback(onVideoFrame);
+  };
+
+  webrtc.renderStats.callbackId = video.requestVideoFrameCallback(onVideoFrame);
+}
+
 function attachWebRtcStream(stream) {
   webrtc.remoteStream = stream;
   state.primaryCameraName = "front";
@@ -1512,6 +1658,8 @@ function attachWebRtcStream(stream) {
       });
     }
   }
+
+  startWebRtcRenderStats(elements.video, stream);
 
   const frontFeed = getCameraState("front");
   if (frontFeed) {
@@ -1566,6 +1714,7 @@ function clearWebRtcStream() {
 
 function closeWebRtcPeerConnection(clearStream = true) {
   webrtc.offerRequested = false;
+  stopWebRtcStats();
   const pc = webrtc.pc;
   webrtc.pc = null;
   if (pc) {
@@ -1599,9 +1748,18 @@ function scheduleWebRtcReconnect(reason) {
 
 function createWebRtcPeerConnection() {
   const pc = new RTCPeerConnection({ iceServers: [] });
+  startWebRtcPeerStats(pc);
 
   pc.ontrack = (event) => {
     console.info(`WebRTC remote track kind=${event.track.kind} id=${event.track.id}`);
+    if (event.receiver && "playoutDelayHint" in event.receiver) {
+      try {
+        event.receiver.playoutDelayHint = 0;
+        console.info("WebRTC receiver playoutDelayHint=0");
+      } catch {
+        console.info("WebRTC receiver playoutDelayHint unavailable");
+      }
+    }
     const [stream] = event.streams;
     attachWebRtcStream(stream || new MediaStream([event.track]));
     event.track.onended = () => {

@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCIceCandidate, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
 
 from webrtc_camera import CameraTrackConfig, create_camera_track
@@ -72,6 +72,8 @@ class Config:
     camera_height: int
     camera_fps: float
     camera_jpeg_quality: int
+    video_codec: str
+    stats_interval_sec: float
 
     @property
     def signaling_url(self) -> str:
@@ -84,8 +86,6 @@ class Config:
     @staticmethod
     def from_env() -> "Config":
         backend_ws_base = os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:3000")
-        frame_width = env_int("CAMERA_FRAME_WIDTH", 960)
-        frame_height = env_int("CAMERA_FRAME_HEIGHT", 720)
         return Config(
             signaling_ws_base=os.getenv("WEBRTC_SIGNALING_WS_BASE", backend_ws_base),
             device_id=os.getenv("PI_DEVICE_ID", "pi-01"),
@@ -94,10 +94,12 @@ class Config:
             log_sdp=env_flag("WEBRTC_LOG_SDP", default=True),
             camera_backend=os.getenv("WEBRTC_CAMERA_BACKEND", "auto"),
             camera_index=env_int_any(("WEBRTC_CAMERA_INDEX", "CAMERA_FRONT_INDEX", "CAMERA_LEFT_INDEX"), 0),
-            camera_width=env_int("WEBRTC_CAMERA_WIDTH", frame_width),
-            camera_height=env_int("WEBRTC_CAMERA_HEIGHT", frame_height),
-            camera_fps=env_float("WEBRTC_CAMERA_FPS", 15.0),
+            camera_width=env_int("WEBRTC_CAMERA_WIDTH", 640),
+            camera_height=env_int("WEBRTC_CAMERA_HEIGHT", 480),
+            camera_fps=env_float("WEBRTC_CAMERA_FPS", 20.0),
             camera_jpeg_quality=env_int("WEBRTC_CAMERA_JPEG_QUALITY", env_int("CAMERA_JPEG_QUALITY", 70)),
+            video_codec=os.getenv("WEBRTC_VIDEO_CODEC", "H264"),
+            stats_interval_sec=env_float("WEBRTC_STATS_INTERVAL_SEC", 2.0),
         )
 
     def camera_track_config(self) -> CameraTrackConfig:
@@ -108,6 +110,7 @@ class Config:
             height=self.camera_height,
             fps=self.camera_fps,
             jpeg_quality=self.camera_jpeg_quality,
+            stats_interval_sec=self.stats_interval_sec,
         )
 
 
@@ -174,12 +177,27 @@ def parse_browser_candidate(payload: Optional[JsonDict]) -> Optional[RTCIceCandi
     )
 
 
+def stat_value(stat: Any, name: str, default: Any = None) -> Any:
+    if isinstance(stat, dict):
+        return stat.get(name, default)
+    return getattr(stat, name, default)
+
+
+def describe_codec(codec: Any) -> str:
+    mime_type = getattr(codec, "mimeType", "unknown")
+    clock_rate = getattr(codec, "clockRate", None)
+    parameters = getattr(codec, "parameters", None) or {}
+    parameter_suffix = f" parameters={parameters}" if parameters else ""
+    return f"{mime_type}/{clock_rate or '-'}{parameter_suffix}"
+
+
 class WebRtcPublisher:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.relay = MediaRelay()
         self.source_track = create_camera_track(config.camera_track_config())
         self.peers: Dict[str, RTCPeerConnection] = {}
+        self.stats_tasks: Dict[str, asyncio.Task[None]] = {}
         self.ws: Optional[Any] = None
 
     async def run_forever(self) -> None:
@@ -246,11 +264,135 @@ class WebRtcPublisher:
         except asyncio.TimeoutError:
             logging.warning("ICE gathering timed out viewerId=%s state=%s", viewer_id, pc.iceGatheringState)
 
+    def _prefer_video_codec(self, pc: RTCPeerConnection, sender: RTCRtpSender, viewer_id: str) -> None:
+        requested_codec = self.config.video_codec.strip().lower().replace("h.264", "h264")
+        if not requested_codec or requested_codec == "auto":
+            logging.info("Video codec preference viewerId=%s requested=auto", viewer_id)
+            return
+
+        transceiver = next((item for item in pc.getTransceivers() if item.sender == sender), None)
+        if transceiver is None:
+            logging.warning("Video codec preference skipped viewerId=%s reason=missing_transceiver", viewer_id)
+            return
+
+        capabilities = RTCRtpSender.getCapabilities("video")
+        codec_prefix = f"video/{requested_codec}"
+        preferred_codecs = [
+            codec for codec in capabilities.codecs if getattr(codec, "mimeType", "").lower() == codec_prefix
+        ]
+        fallback_codecs = [
+            codec for codec in capabilities.codecs if getattr(codec, "mimeType", "").lower() != codec_prefix
+        ]
+
+        if not preferred_codecs:
+            logging.warning(
+                "Video codec preference unavailable viewerId=%s requested=%s available=%s",
+                viewer_id,
+                self.config.video_codec,
+                ", ".join(describe_codec(codec) for codec in capabilities.codecs),
+            )
+            return
+
+        transceiver.setCodecPreferences([*preferred_codecs, *fallback_codecs])
+        logging.info(
+            "Video codec preference viewerId=%s requested=%s preferred=%s note=%s",
+            viewer_id,
+            self.config.video_codec,
+            ", ".join(describe_codec(codec) for codec in preferred_codecs),
+            "H264 can use hardware only if the local aiortc/PyAV encoder stack exposes it",
+        )
+
+    async def _stats_loop(self, viewer_id: str, sender: RTCRtpSender) -> None:
+        last_logged_at = asyncio.get_running_loop().time()
+        last_frames_encoded: Optional[int] = None
+        last_total_encode_time: Optional[float] = None
+        last_bytes_sent: Optional[int] = None
+        last_packets_sent: Optional[int] = None
+
+        while viewer_id in self.peers:
+            await asyncio.sleep(max(0.5, self.config.stats_interval_sec))
+            now = asyncio.get_running_loop().time()
+            elapsed_sec = max(0.001, now - last_logged_at)
+            last_logged_at = now
+
+            try:
+                report = await sender.getStats()
+            except Exception as exc:
+                logging.warning("WebRTC outbound stats unavailable viewerId=%s error=%s", viewer_id, exc)
+                continue
+
+            outbound_stats = None
+            for stat in report.values():
+                if stat_value(stat, "type") != "outbound-rtp":
+                    continue
+                kind = stat_value(stat, "kind") or stat_value(stat, "mediaType")
+                if kind in {None, "video"}:
+                    outbound_stats = stat
+                    break
+
+            if outbound_stats is None:
+                logging.info("WebRTC outbound stats viewerId=%s unavailable=no_outbound_video_stat", viewer_id)
+                continue
+
+            frames_encoded = stat_value(outbound_stats, "framesEncoded")
+            total_encode_time = stat_value(outbound_stats, "totalEncodeTime")
+            bytes_sent = stat_value(outbound_stats, "bytesSent")
+            packets_sent = stat_value(outbound_stats, "packetsSent")
+
+            outbound_fps = None
+            encode_ms_per_frame = None
+            if isinstance(frames_encoded, int) and last_frames_encoded is not None:
+                frame_delta = frames_encoded - last_frames_encoded
+                outbound_fps = frame_delta / elapsed_sec
+                if (
+                    frame_delta > 0
+                    and isinstance(total_encode_time, (float, int))
+                    and isinstance(last_total_encode_time, (float, int))
+                ):
+                    encode_ms_per_frame = ((total_encode_time - last_total_encode_time) * 1000.0) / frame_delta
+
+            bitrate_kbps = None
+            if isinstance(bytes_sent, int) and last_bytes_sent is not None:
+                bitrate_kbps = ((bytes_sent - last_bytes_sent) * 8.0) / elapsed_sec / 1000.0
+
+            packet_rate = None
+            if isinstance(packets_sent, int) and last_packets_sent is not None:
+                packet_rate = (packets_sent - last_packets_sent) / elapsed_sec
+
+            logging.info(
+                (
+                    "WebRTC outbound stats viewerId=%s outboundFps=%s encodeMsPerFrame=%s "
+                    "networkSendKbps=%s packetRate=%s framesEncoded=%s packetsSent=%s bytesSent=%s"
+                ),
+                viewer_id,
+                f"{outbound_fps:.1f}" if outbound_fps is not None else "unavailable",
+                f"{encode_ms_per_frame:.1f}" if encode_ms_per_frame is not None else "unavailable",
+                f"{bitrate_kbps:.0f}" if bitrate_kbps is not None else "unavailable",
+                f"{packet_rate:.1f}" if packet_rate is not None else "unavailable",
+                frames_encoded if frames_encoded is not None else "unavailable",
+                packets_sent if packets_sent is not None else "unavailable",
+                bytes_sent if bytes_sent is not None else "unavailable",
+            )
+
+            if isinstance(frames_encoded, int):
+                last_frames_encoded = frames_encoded
+            if isinstance(total_encode_time, (float, int)):
+                last_total_encode_time = float(total_encode_time)
+            if isinstance(bytes_sent, int):
+                last_bytes_sent = bytes_sent
+            if isinstance(packets_sent, int):
+                last_packets_sent = packets_sent
+
     async def _create_peer(self, viewer_id: str) -> RTCPeerConnection:
         await self._close_peer(viewer_id)
         pc = RTCPeerConnection()
         self.peers[viewer_id] = pc
-        pc.addTrack(self.relay.subscribe(self.source_track))
+        sender = pc.addTrack(self.relay.subscribe(self.source_track, buffered=False))
+        self._prefer_video_codec(pc, sender, viewer_id)
+        self.stats_tasks[viewer_id] = asyncio.create_task(
+            self._stats_loop(viewer_id, sender),
+            name=f"webrtc-outbound-stats-{viewer_id}",
+        )
 
         @pc.on("connectionstatechange")
         async def on_connection_state_change() -> None:
@@ -321,6 +463,10 @@ class WebRtcPublisher:
         await pc.addIceCandidate(candidate)
 
     async def _close_peer(self, viewer_id: str) -> None:
+        stats_task = self.stats_tasks.pop(viewer_id, None)
+        if stats_task is not None:
+            stats_task.cancel()
+
         pc = self.peers.pop(viewer_id, None)
         if pc is None:
             return
@@ -372,7 +518,10 @@ async def async_main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = Config.from_env()
     logging.info(
-        "Pi WebRTC publisher starting deviceId=%s signaling=%s cameraBackend=%s cameraIndex=%s size=%sx%s fps=%.2f",
+        (
+            "Pi WebRTC publisher starting deviceId=%s signaling=%s cameraBackend=%s cameraIndex=%s "
+            "size=%sx%s fps=%.2f codec=%s statsIntervalSec=%.1f"
+        ),
         config.device_id,
         config.signaling_url,
         config.camera_backend,
@@ -380,6 +529,8 @@ async def async_main() -> None:
         config.camera_width,
         config.camera_height,
         config.camera_fps,
+        config.video_codec,
+        config.stats_interval_sec,
     )
     publisher = WebRtcPublisher(config)
     try:
