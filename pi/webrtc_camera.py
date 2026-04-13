@@ -41,6 +41,70 @@ class CameraTrackConfig:
     height: int
     fps: float
     jpeg_quality: int
+    stats_interval_sec: float = 2.0
+
+
+class CameraTimingLogger:
+    def __init__(self, source: str, log_interval_sec: float) -> None:
+        self.source = source
+        self.log_interval_sec = max(0.5, log_interval_sec)
+        self.capture_count = 0
+        self.return_count = 0
+        self.drop_count = 0
+        self.decode_time_ms_total = 0.0
+        self.capture_to_handoff_ms_total = 0.0
+        self._last_log_at = time.monotonic()
+        self._last_capture_count = 0
+        self._last_return_count = 0
+        self._last_drop_count = 0
+        self._last_decode_time_ms_total = 0.0
+        self._last_capture_to_handoff_ms_total = 0.0
+
+    def record_capture(self, frame_count: int = 1, dropped_count: int = 0) -> None:
+        self.capture_count += max(0, frame_count)
+        self.drop_count += max(0, dropped_count)
+
+    def record_handoff(self, *, decode_ms: float, capture_to_handoff_ms: float) -> None:
+        self.return_count += 1
+        self.decode_time_ms_total += max(0.0, decode_ms)
+        self.capture_to_handoff_ms_total += max(0.0, capture_to_handoff_ms)
+
+    def maybe_log(self, force: bool = False) -> None:
+        now = time.monotonic()
+        elapsed_sec = now - self._last_log_at
+        if not force and elapsed_sec < self.log_interval_sec:
+            return
+
+        capture_delta = self.capture_count - self._last_capture_count
+        return_delta = self.return_count - self._last_return_count
+        drop_delta = self.drop_count - self._last_drop_count
+        decode_delta = self.decode_time_ms_total - self._last_decode_time_ms_total
+        handoff_delta = self.capture_to_handoff_ms_total - self._last_capture_to_handoff_ms_total
+
+        capture_fps = capture_delta / elapsed_sec if elapsed_sec > 0 else 0.0
+        handoff_fps = return_delta / elapsed_sec if elapsed_sec > 0 else 0.0
+        decode_ms_avg = decode_delta / return_delta if return_delta > 0 else 0.0
+        capture_to_handoff_ms_avg = handoff_delta / return_delta if return_delta > 0 else 0.0
+
+        logging.info(
+            (
+                "WebRTC camera timing source=%s captureFps=%.1f encodeInputFps=%.1f "
+                "droppedOldFrames=%s decodeMsAvg=%.1f captureToEncodeInputMsAvg=%.1f"
+            ),
+            self.source,
+            capture_fps,
+            handoff_fps,
+            drop_delta,
+            decode_ms_avg,
+            capture_to_handoff_ms_avg,
+        )
+
+        self._last_log_at = now
+        self._last_capture_count = self.capture_count
+        self._last_return_count = self.return_count
+        self._last_drop_count = self.drop_count
+        self._last_decode_time_ms_total = self.decode_time_ms_total
+        self._last_capture_to_handoff_ms_total = self.capture_to_handoff_ms_total
 
 
 def clamp_int(value: int, minimum: int, maximum: int) -> int:
@@ -85,6 +149,14 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
         self.command_name = command_name
         self._buffer = bytearray()
         self._process: Optional[asyncio.subprocess.Process] = None
+        self._reader_task: Optional[asyncio.Task[None]] = None
+        self._latest_jpeg: Optional[tuple[bytes, float]] = None
+        self._latest_event = asyncio.Event()
+        self._has_unconsumed_frame = False
+        self._timing_logger = CameraTimingLogger(
+            source=f"{command_name}:mjpeg",
+            log_interval_sec=config.stats_interval_sec,
+        )
         self._started_once = False
 
     def _build_command(self) -> List[str]:
@@ -143,25 +215,26 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
             return
 
     @staticmethod
-    def _extract_jpeg(buffer: bytearray) -> Optional[bytes]:
+    def _extract_jpegs(buffer: bytearray) -> List[bytes]:
+        frames: List[bytes] = []
         while True:
             start_index = buffer.find(JPEG_SOI)
             if start_index < 0:
                 if len(buffer) > 1:
                     del buffer[:-1]
-                return None
+                return frames
 
             if start_index > 0:
                 del buffer[:start_index]
 
             end_index = buffer.find(JPEG_EOI, 2)
             if end_index < 0:
-                return None
+                return frames
 
             frame = bytes(buffer[: end_index + 2])
             del buffer[: end_index + 2]
             if len(frame) >= 1024:
-                return frame
+                frames.append(frame)
 
     @staticmethod
     def _decode_jpeg(jpeg_bytes: bytes) -> VideoFrame:
@@ -171,7 +244,7 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
             image = image.convert("RGB")
         return VideoFrame.from_image(image)
 
-    async def _read_jpeg(self) -> bytes:
+    async def _reader_loop(self) -> None:
         while self.readyState == "live":
             process = await self._ensure_process()
             assert process.stdout is not None
@@ -184,20 +257,67 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
                 continue
 
             self._buffer.extend(chunk)
-            frame = self._extract_jpeg(self._buffer)
-            if frame:
-                return frame
+            frames = self._extract_jpegs(self._buffer)
+            if not frames:
+                continue
+
+            dropped_count = max(0, len(frames) - 1)
+            if self._has_unconsumed_frame:
+                dropped_count += 1
+
+            self._latest_jpeg = (frames[-1], time.perf_counter())
+            self._has_unconsumed_frame = True
+            self._latest_event.set()
+            self._timing_logger.record_capture(frame_count=len(frames), dropped_count=dropped_count)
+            self._timing_logger.maybe_log()
+
+    def _ensure_reader_task(self) -> None:
+        if self._reader_task is not None and not self._reader_task.done():
+            return
+        self._reader_task = asyncio.create_task(self._reader_loop(), name=f"webrtc-camera-reader-{self.config.camera_index}")
+        self._reader_task.add_done_callback(self._log_reader_task_result)
+
+    @staticmethod
+    def _log_reader_task_result(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logging.warning("WebRTC camera reader stopped: %s", exc)
+
+    async def _read_latest_jpeg(self) -> tuple[bytes, float]:
+        self._ensure_reader_task()
+        while self.readyState == "live":
+            try:
+                await asyncio.wait_for(self._latest_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                self._ensure_reader_task()
+                continue
+
+            latest = self._latest_jpeg
+            self._latest_event.clear()
+            self._has_unconsumed_frame = False
+            if latest is not None:
+                return latest
 
         raise MediaStreamError
 
     async def recv(self) -> VideoFrame:
         while self.readyState == "live":
-            jpeg_bytes = await self._read_jpeg()
+            jpeg_bytes, captured_at = await self._read_latest_jpeg()
+            decode_started_at = time.perf_counter()
             try:
                 frame = self._decode_jpeg(jpeg_bytes)
             except Exception as exc:
                 logging.warning("WebRTC camera JPEG decode failed: %s", exc)
                 continue
+
+            now = time.perf_counter()
+            self._timing_logger.record_handoff(
+                decode_ms=(now - decode_started_at) * 1000.0,
+                capture_to_handoff_ms=(now - captured_at) * 1000.0,
+            )
+            self._timing_logger.maybe_log()
 
             pts, time_base = await self.next_timestamp()
             frame.pts = pts
@@ -207,6 +327,9 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
         raise MediaStreamError
 
     def stop(self) -> None:
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            self._reader_task = None
         self._terminate_process()
         super().stop()
 
@@ -219,6 +342,10 @@ class OpenCvCameraTrack(VideoStreamTrack):
         self.config = config
         self._capture: Optional[object] = None
         self._last_frame_monotonic = 0.0
+        self._timing_logger = CameraTimingLogger(
+            source="opencv",
+            log_interval_sec=config.stats_interval_sec,
+        )
 
     def _open_capture(self) -> object:
         if cv2 is None:
@@ -232,6 +359,7 @@ class OpenCvCameraTrack(VideoStreamTrack):
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(max(160, self.config.width)))
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(max(120, self.config.height)))
         capture.set(cv2.CAP_PROP_FPS, float(clamp_float(self.config.fps, 1.0, 60.0)))
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         logging.info("WebRTC camera starting via OpenCV index=%s", self.config.camera_index)
         return capture
 
@@ -250,11 +378,22 @@ class OpenCvCameraTrack(VideoStreamTrack):
 
     def _read_frame(self) -> VideoFrame:
         capture = self._ensure_capture()
+        captured_at = time.perf_counter()
         ok, image = capture.read()
         if not ok or image is None:
             self._release_capture()
             raise RuntimeError("OpenCV camera read failed")
-        return VideoFrame.from_ndarray(image, format="bgr24")
+
+        decode_started_at = time.perf_counter()
+        frame = VideoFrame.from_ndarray(image, format="bgr24")
+        now = time.perf_counter()
+        self._timing_logger.record_capture()
+        self._timing_logger.record_handoff(
+            decode_ms=(now - decode_started_at) * 1000.0,
+            capture_to_handoff_ms=(now - captured_at) * 1000.0,
+        )
+        self._timing_logger.maybe_log()
+        return frame
 
     async def _pace(self) -> None:
         interval_sec = 1.0 / clamp_float(self.config.fps, 1.0, 60.0)

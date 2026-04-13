@@ -27,7 +27,7 @@ Raspberry Pi
   pi/webrtc_publisher.py
   - connects to /webrtc as role=pi
   - creates one RTCPeerConnection per browser viewer
-  - publishes one camera track from pi/webrtc_camera.py
+  - publishes one latest-frame-only camera track from pi/webrtc_camera.py
 ```
 
 The first negotiation flow is:
@@ -37,8 +37,9 @@ The first negotiation flow is:
 3. Browser sends `viewer:ready`.
 4. Pi creates an offer with one video track and sends `webrtc:offer`.
 5. Browser creates an answer and sends `webrtc:answer`.
-6. Browser and Pi log SDP, ICE candidates, ICE state, signaling state, and peer
-   connection state.
+6. Browser and Pi log SDP, ICE candidates, ICE state, signaling state, peer
+   connection state, capture timing, outbound stats, and browser receive/render
+   timing.
 
 ## Dependency List
 
@@ -147,11 +148,19 @@ http://<pc-ip>:8080?backendHost=<pc-ip>&deviceId=pi-01
 ```bash
 WEBRTC_CAMERA_INDEX=0
 WEBRTC_CAMERA_BACKEND=auto     # auto | rpicam | opencv
-WEBRTC_CAMERA_WIDTH=960
-WEBRTC_CAMERA_HEIGHT=720
-WEBRTC_CAMERA_FPS=15
+WEBRTC_CAMERA_WIDTH=640
+WEBRTC_CAMERA_HEIGHT=480
+WEBRTC_CAMERA_FPS=20
 WEBRTC_CAMERA_JPEG_QUALITY=70
+WEBRTC_VIDEO_CODEC=H264        # H264 preferred, VP8 fallback if unavailable
+WEBRTC_STATS_INTERVAL_SEC=2
 WEBRTC_LOG_SDP=1
+```
+
+For a sharper but still conservative profile, try:
+
+```bash
+WEBRTC_CAMERA_WIDTH=1280 WEBRTC_CAMERA_HEIGHT=720 WEBRTC_CAMERA_FPS=15
 ```
 
 Browser query-string overrides:
@@ -176,6 +185,10 @@ Pi publisher logs include:
 - local ICE candidates embedded in SDP
 - remote ICE candidates from the browser
 - peer connection, ICE connection, ICE gathering, and signaling state
+- camera capture FPS, dropped old frames, JPEG decode time, and
+  capture-to-encode-input handoff time
+- outbound WebRTC frame rate, network send bitrate, packet rate, and encode time
+  per frame when aiortc exposes it
 
 Browser logs include:
 
@@ -184,6 +197,49 @@ Browser logs include:
 - local answer SDP
 - local and remote ICE candidates
 - peer connection, ICE connection, ICE gathering, and signaling state
+- receive frame rate, network receive bitrate, decode time, jitter-buffer delay,
+  dropped frames, and packet loss
+- render frame rate, receive-to-render delay, capture-to-render delay when the
+  browser exposes it, render queue delay, and processing time
+
+## Low-Latency Defaults
+
+- WebRTC camera defaults to `640x480` at `20 fps`.
+- The Pi camera reader drains camera stdout continuously and keeps only the most
+  recent frame.
+- The aiortc `MediaRelay` subscriber is unbuffered, so slow viewers do not build
+  per-viewer frame queues.
+- The browser requests `playoutDelayHint=0` when supported.
+- H.264 is preferred in codec negotiation. aiortc can only use hardware H.264 if
+  the local encoder stack exposes it; otherwise it falls back to the available
+  H.264 or VP8 implementation.
+
+## Tuning Order
+
+Less delay:
+
+1. Keep `WEBRTC_CAMERA_WIDTH=640`, `WEBRTC_CAMERA_HEIGHT=480`, and
+   `WEBRTC_CAMERA_FPS=20`.
+2. Watch `droppedOldFrames`, `captureToEncodeInputMsAvg`, `networkSendKbps`,
+   browser `jitterBufferMs`, and `receiveToRenderMs`.
+3. If `captureToEncodeInputMsAvg` or `encodeMsPerFrame` grows, lower FPS before
+   raising resolution.
+4. If browser `jitterBufferMs` grows, lower resolution or move to a cleaner
+   network path before increasing sharpness.
+
+Better sharpness:
+
+1. Try `WEBRTC_CAMERA_WIDTH=1280 WEBRTC_CAMERA_HEIGHT=720 WEBRTC_CAMERA_FPS=15`.
+2. If delay stays acceptable, try `WEBRTC_CAMERA_FPS=20`.
+3. Keep `WEBRTC_VIDEO_CODEC=H264` unless a browser/device behaves worse with it.
+
+More stability:
+
+1. Use `640x480` at `15 fps`.
+2. Keep H.264 preferred, but try `WEBRTC_VIDEO_CODEC=VP8` if H.264 negotiation is
+   unstable on a specific browser.
+3. If ICE is unstable off-LAN, add TURN next; this pass intentionally does not
+   add TURN yet.
 
 ## Current Limits
 
