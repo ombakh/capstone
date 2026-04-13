@@ -72,6 +72,8 @@ const state = {
 
 const uiClients = new Set();
 const piClients = new Map();
+const webrtcPiClients = new Map();
+const webrtcViewerClients = new Map();
 const recordingSessions = new Map();
 
 function nowIso() {
@@ -765,6 +767,234 @@ function getRemoteAddress(request) {
   return request.socket?.remoteAddress || "unknown";
 }
 
+function getWebRtcPiSocket(deviceId) {
+  return webrtcPiClients.get(deviceId) || null;
+}
+
+function getWebRtcViewer(viewerId) {
+  return webrtcViewerClients.get(viewerId) || null;
+}
+
+function getWebRtcViewersForDevice(deviceId) {
+  return Array.from(webrtcViewerClients.values()).filter((client) => client.deviceId === deviceId);
+}
+
+function summarizeIceCandidate(candidate) {
+  if (!candidate) return "end-of-candidates";
+  const candidateLine = String(candidate.candidate || "").trim();
+  if (!candidateLine) return "empty-candidate";
+
+  const tokens = candidateLine.replace(/^candidate:/, "").split(/\s+/);
+  const foundation = tokens[0] || "-";
+  const component = tokens[1] || "-";
+  const protocol = tokens[2] || "-";
+  const ip = tokens[4] || "-";
+  const port = tokens[5] || "-";
+  const typeIndex = tokens.indexOf("typ");
+  const candidateType = typeIndex >= 0 ? tokens[typeIndex + 1] || "-" : "-";
+  return `foundation=${foundation} component=${component} protocol=${protocol} address=${ip}:${port} type=${candidateType}`;
+}
+
+function logWebRtcSdp(direction, deviceId, viewerId, sdp) {
+  const description = isObject(sdp) ? sdp : {};
+  const descriptionType = String(description.type || "-");
+  const sdpText = String(description.sdp || "");
+  console.log(
+    `[webrtc] ${direction} SDP type=${descriptionType} deviceId=${deviceId} viewerId=${viewerId} bytes=${sdpText.length}`
+  );
+  if (sdpText) {
+    console.log(`[webrtc] ${direction} SDP body deviceId=${deviceId} viewerId=${viewerId}\n${sdpText}`);
+  }
+}
+
+function logWebRtcIce(direction, deviceId, viewerId, candidate) {
+  console.log(`[webrtc] ${direction} ICE deviceId=${deviceId} viewerId=${viewerId} ${summarizeIceCandidate(candidate)}`);
+}
+
+function logWebRtcConnection(message, deviceId, viewerId = "-") {
+  console.log(`[webrtc] ${message} deviceId=${deviceId} viewerId=${viewerId}`);
+}
+
+function sendWebRtcPiStatus(deviceId, status) {
+  for (const client of getWebRtcViewersForDevice(deviceId)) {
+    safeJsonSend(client.socket, {
+      type: "pi:webrtc-status",
+      deviceId,
+      status,
+      at: nowIso()
+    });
+  }
+}
+
+function registerWebRtcPiSocket(socket, deviceId) {
+  const existing = getWebRtcPiSocket(deviceId);
+  if (isSocketOpen(existing)) {
+    closeSocket(existing, WS_SERVICE_RESTART, "replaced by a new WebRTC publisher");
+  }
+
+  webrtcPiClients.set(deviceId, socket);
+  logWebRtcConnection("pi signaling connected", deviceId);
+  safeJsonSend(socket, {
+    type: "signal:ready",
+    role: "pi",
+    deviceId,
+    serverTime: nowIso()
+  });
+
+  for (const client of getWebRtcViewersForDevice(deviceId)) {
+    safeJsonSend(client.socket, {
+      type: "pi:webrtc-status",
+      deviceId,
+      status: "online",
+      at: nowIso()
+    });
+    safeJsonSend(socket, {
+      type: "viewer:connected",
+      deviceId,
+      viewerId: client.viewerId,
+      at: nowIso()
+    });
+  }
+}
+
+function registerWebRtcViewerSocket(socket, deviceId) {
+  const viewerId = crypto.randomUUID();
+  const piSocket = getWebRtcPiSocket(deviceId);
+  const piConnected = isSocketOpen(piSocket);
+
+  webrtcViewerClients.set(viewerId, {
+    viewerId,
+    deviceId,
+    socket,
+    connectedAt: nowIso()
+  });
+
+  logWebRtcConnection("viewer signaling connected", deviceId, viewerId);
+  safeJsonSend(socket, {
+    type: "signal:ready",
+    role: "viewer",
+    deviceId,
+    viewerId,
+    piConnected,
+    serverTime: nowIso()
+  });
+  safeJsonSend(socket, {
+    type: "pi:webrtc-status",
+    deviceId,
+    status: piConnected ? "online" : "offline",
+    at: nowIso()
+  });
+
+  if (piConnected) {
+    safeJsonSend(piSocket, {
+      type: "viewer:connected",
+      deviceId,
+      viewerId,
+      at: nowIso()
+    });
+  }
+
+  return viewerId;
+}
+
+function forwardWebRtcToPi(viewerId, message) {
+  const client = getWebRtcViewer(viewerId);
+  if (!client) return;
+
+  const piSocket = getWebRtcPiSocket(client.deviceId);
+  if (!isSocketOpen(piSocket)) {
+    safeJsonSend(client.socket, {
+      type: "pi:webrtc-status",
+      deviceId: client.deviceId,
+      status: "offline",
+      at: nowIso()
+    });
+    return;
+  }
+
+  const forwarded = {
+    ...message,
+    deviceId: client.deviceId,
+    viewerId
+  };
+
+  if (message.type === "webrtc:answer") {
+    logWebRtcSdp("viewer->pi", client.deviceId, viewerId, message.sdp);
+  } else if (message.type === "webrtc:ice") {
+    logWebRtcIce("viewer->pi", client.deviceId, viewerId, message.candidate || null);
+  } else {
+    logWebRtcConnection(`viewer->pi ${message.type}`, client.deviceId, viewerId);
+  }
+
+  safeJsonSend(piSocket, forwarded);
+}
+
+function forwardWebRtcToViewer(deviceId, viewerId, message) {
+  const client = getWebRtcViewer(viewerId);
+  if (!client || client.deviceId !== deviceId) return;
+
+  if (message.type === "webrtc:offer") {
+    logWebRtcSdp("pi->viewer", deviceId, viewerId, message.sdp);
+  } else if (message.type === "webrtc:ice") {
+    logWebRtcIce("pi->viewer", deviceId, viewerId, message.candidate || null);
+  } else {
+    logWebRtcConnection(`pi->viewer ${message.type}`, deviceId, viewerId);
+  }
+
+  safeJsonSend(client.socket, {
+    ...message,
+    deviceId,
+    viewerId
+  });
+}
+
+function handleWebRtcPiMessage(deviceId, message) {
+  if (!isObject(message)) return;
+
+  const viewerId = String(message.viewerId || "").trim();
+  if (!viewerId) return;
+
+  if (["webrtc:offer", "webrtc:ice", "webrtc:error"].includes(message.type)) {
+    forwardWebRtcToViewer(deviceId, viewerId, message);
+  }
+}
+
+function handleWebRtcViewerMessage(viewerId, message) {
+  if (!isObject(message)) return;
+
+  if (["viewer:ready", "webrtc:answer", "webrtc:ice"].includes(message.type)) {
+    forwardWebRtcToPi(viewerId, message);
+  }
+}
+
+function handleWebRtcSocketClose(role, socket, deviceId, viewerId) {
+  if (role === "pi") {
+    if (getWebRtcPiSocket(deviceId) === socket) {
+      webrtcPiClients.delete(deviceId);
+      logWebRtcConnection("pi signaling disconnected", deviceId);
+      sendWebRtcPiStatus(deviceId, "offline");
+    }
+    return;
+  }
+
+  if (role === "viewer") {
+    const client = getWebRtcViewer(viewerId);
+    if (client?.socket !== socket) return;
+
+    webrtcViewerClients.delete(viewerId);
+    logWebRtcConnection("viewer signaling disconnected", deviceId, viewerId);
+    const piSocket = getWebRtcPiSocket(deviceId);
+    if (isSocketOpen(piSocket)) {
+      safeJsonSend(piSocket, {
+        type: "viewer:disconnected",
+        deviceId,
+        viewerId,
+        at: nowIso()
+      });
+    }
+  }
+}
+
 function requirePiAuth(req, res, next) {
   if (!config.piDeviceToken) {
     next();
@@ -785,7 +1015,9 @@ app.get("/health", (req, res) => {
     ok: true,
     uptimeSeconds: Math.floor(process.uptime()),
     connectedUiClients: uiClients.size,
-    connectedPiClients: piClients.size
+    connectedPiClients: piClients.size,
+    connectedWebRtcPiClients: webrtcPiClients.size,
+    connectedWebRtcViewerClients: webrtcViewerClients.size
   });
 });
 
@@ -1090,7 +1322,28 @@ function handleSocketClose(role, socket, deviceId) {
 }
 
 const server = http.createServer(app);
-const wsServer = new WebSocketServer({ server, path: "/ws" });
+const wsServer = new WebSocketServer({ noServer: true });
+const webrtcSignalingServer = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (request, socket, head) => {
+  const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
+  let targetServer = null;
+  if (requestUrl.pathname === "/ws") {
+    targetServer = wsServer;
+  } else if (requestUrl.pathname === "/webrtc") {
+    targetServer = webrtcSignalingServer;
+  }
+
+  if (!targetServer) {
+    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  targetServer.handleUpgrade(request, socket, head, (webSocket) => {
+    targetServer.emit("connection", webSocket, request);
+  });
+});
 
 wsServer.on("connection", (socket, request) => {
   const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
@@ -1142,6 +1395,57 @@ wsServer.on("connection", (socket, request) => {
       console.log(`ui disconnected remote=${remoteAddress}`);
     }
     handleSocketClose(role, socket, deviceId);
+  });
+});
+
+webrtcSignalingServer.on("connection", (socket, request) => {
+  const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
+  const role = requestUrl.searchParams.get("role");
+  const deviceId = String(requestUrl.searchParams.get("deviceId") || "").trim();
+  const token = extractRequestToken(requestUrl, request);
+  const remoteAddress = getRemoteAddress(request);
+  let viewerId = "";
+
+  if (!deviceId) {
+    console.warn(`[webrtc] socket rejected remote=${remoteAddress} reason=missing_device_id`);
+    closeSocket(socket, WS_POLICY_VIOLATION, "deviceId is required");
+    return;
+  }
+
+  if (role === "pi") {
+    if (config.piDeviceToken && token !== config.piDeviceToken) {
+      console.warn(`[webrtc] pi rejected remote=${remoteAddress} deviceId=${deviceId} reason=invalid_device_token`);
+      closeSocket(socket, WS_POLICY_VIOLATION, "invalid device token");
+      return;
+    }
+
+    console.log(`[webrtc] pi signaling accepted remote=${remoteAddress} deviceId=${deviceId}`);
+    registerWebRtcPiSocket(socket, deviceId);
+  } else if (role === "viewer") {
+    console.log(`[webrtc] viewer signaling accepted remote=${remoteAddress} deviceId=${deviceId}`);
+    viewerId = registerWebRtcViewerSocket(socket, deviceId);
+  } else {
+    console.warn(`[webrtc] socket rejected remote=${remoteAddress} reason=invalid_role role=${role || "-"}`);
+    closeSocket(socket, WS_POLICY_VIOLATION, "role must be pi or viewer");
+    return;
+  }
+
+  socket.on("message", (rawData) => {
+    const message = parseJsonMessage(rawData);
+    if (!message) return;
+
+    if (role === "pi") {
+      handleWebRtcPiMessage(deviceId, message);
+      return;
+    }
+
+    if (role === "viewer") {
+      handleWebRtcViewerMessage(viewerId, message);
+    }
+  });
+
+  socket.on("close", () => {
+    handleWebRtcSocketClose(role, socket, deviceId, viewerId);
   });
 });
 

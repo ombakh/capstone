@@ -13,6 +13,11 @@ Responsibilities:
 - Stream live JPEG frames for both configured Pi cameras to the frontend.
 - Stream live LiDAR scans (`lidar.scan`) to backend for web rendering.
 
+The first WebRTC video path runs as a separate Pi publisher process:
+`pi/webrtc_publisher.py`. Use `PI_CAMERA_JPEG_ENABLED=0` on `gateway.py` when
+the WebRTC publisher owns the camera. See
+[WebRTC Video First Pass](../docs/webrtc-video-first-pass.md).
+
 ## Install
 
 From the repo root on the Pi:
@@ -208,6 +213,12 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `CAMERA_FRAME_WIDTH` default: `960`
 - `CAMERA_FRAME_HEIGHT` default: `720`
 - `CAMERA_JPEG_QUALITY` default: `60`
+- `PI_CAMERA_JPEG_ENABLED` default: `1` (set `0` when `pi/webrtc_publisher.py` owns the camera)
+- `WEBRTC_CAMERA_INDEX` default: `CAMERA_FRONT_INDEX` / `0`
+- `WEBRTC_CAMERA_BACKEND` default: `auto`, supported values: `auto`, `rpicam`, `opencv`
+- `WEBRTC_CAMERA_WIDTH` / `WEBRTC_CAMERA_HEIGHT` default to `CAMERA_FRAME_WIDTH` / `CAMERA_FRAME_HEIGHT`
+- `WEBRTC_CAMERA_FPS` default: `15`
+- `WEBRTC_LOG_SDP` default: `1`
 - `LIDAR_ENABLED` default: `1` (set `0` to disable streaming)
 - `LIDAR_SERIAL_PORT` default: `/dev/ttyUSB1` when `PI_MOTOR_DRIVER=esp`, otherwise `/dev/ttyUSB0`
 - `LIDAR_MAX_DISTANCE_MM` default: `6000`
