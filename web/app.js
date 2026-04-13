@@ -134,7 +134,11 @@ const webrtc = {
   wsUrl: resolveWebRtcSignalingUrl(),
   viewerId: null,
   pc: null,
-  remoteStream: null,
+  remoteStreams: new Map(),
+  trackCameraNamesByMid: new Map(),
+  trackCameraNamesByOrder: [],
+  trackCameraNamesByTrackId: new Map(),
+  remoteTrackCount: 0,
   reconnectTimer: null,
   offerRequested: false,
   statsTimer: null,
@@ -489,7 +493,17 @@ function getCameraStatus(name) {
 
 function setImageSource(element, nextSrc) {
   if (!element) return;
-  if (element instanceof HTMLVideoElement) return;
+  if (element instanceof HTMLVideoElement) {
+    const nextPoster = nextSrc && nextSrc !== "webrtc" ? nextSrc : "";
+    const currentPoster = element.getAttribute("poster") || "";
+    if (currentPoster === nextPoster) return;
+    if (nextPoster) {
+      element.setAttribute("poster", nextPoster);
+    } else {
+      element.removeAttribute("poster");
+    }
+    return;
+  }
 
   const currentSrc = element.getAttribute("src") || "";
   if (currentSrc === nextSrc) return;
@@ -502,12 +516,50 @@ function setImageSource(element, nextSrc) {
   element.removeAttribute("src");
 }
 
+function setVideoStream(video, stream) {
+  if (!(video instanceof HTMLVideoElement)) return;
+  if (video.srcObject !== stream) {
+    video.srcObject = stream;
+  }
+  if (!stream) return;
+
+  const playResult = video.play();
+  if (playResult && typeof playResult.catch === "function") {
+    playResult.catch(() => {
+      // Autoplay can be blocked until the user interacts with the page.
+    });
+  }
+}
+
+function getWebRtcCameraStream(cameraName) {
+  const normalizedName = normalizeCameraName(cameraName);
+  return isKnownCameraName(normalizedName) ? webrtc.remoteStreams.get(normalizedName) || null : null;
+}
+
 function cameraHasRenderableFeed(name) {
   const feed = getCameraState(name);
   if (!feed) return false;
 
+  if (webrtc.enabled) return Boolean(getWebRtcCameraStream(name));
   if (feed.frameSrc) return true;
   return Boolean(getCameraStatus(name)?.streaming);
+}
+
+function syncWebRtcVideoElements() {
+  if (!webrtc.enabled) return;
+
+  const primaryCameraName = getPrimaryCameraName();
+  const secondaryCameraName = getSecondaryCameraName();
+  const primaryStream = getWebRtcCameraStream(primaryCameraName);
+  const secondaryStream = getWebRtcCameraStream(secondaryCameraName);
+
+  setVideoStream(elements.video, primaryStream);
+  setVideoStream(elements.primaryMiniVideo, primaryStream);
+  setVideoStream(elements.secondaryVideo, secondaryStream);
+
+  if (primaryStream) {
+    startWebRtcRenderStats(elements.video, primaryStream, primaryCameraName);
+  }
 }
 
 function syncPrimaryCameraSelection() {
@@ -532,6 +584,7 @@ function renderCameraFeeds() {
   setImageSource(elements.video, primaryFeed?.frameSrc || "");
   setImageSource(elements.primaryMiniVideo, primaryFeed?.frameSrc || "");
   setImageSource(elements.secondaryVideo, secondaryFeed?.frameSrc || "");
+  syncWebRtcVideoElements();
 
   if (elements.primaryCameraLabel) {
     elements.primaryCameraLabel.textContent = formatCameraName(primaryCameraName);
@@ -1003,6 +1056,17 @@ function updateLidarScan(payload) {
 function applyLidarStatus(payload) {
   if (!isObject(payload)) return;
 
+  console.info(
+    [
+      "LiDAR status",
+      `enabled=${payload.enabled ?? "unknown"}`,
+      `connected=${payload.connected ?? "unknown"}`,
+      `driverAvailable=${payload.driverAvailable ?? "unknown"}`,
+      `port=${payload.port || "unknown"}`,
+      `lastError=${payload.lastError || ""}`
+    ].join(" ")
+  );
+
   const maxDistanceMm = Number(payload.maxDistanceMm);
   if (Number.isFinite(maxDistanceMm) && maxDistanceMm > 0) {
     lidarState.maxDistanceMm = maxDistanceMm;
@@ -1457,7 +1521,9 @@ function handleBackendMessage(message) {
 }
 
 function getWebRtcVideoElements() {
-  return [elements.video, elements.primaryMiniVideo].filter((element) => element instanceof HTMLVideoElement);
+  return [elements.video, elements.primaryMiniVideo, elements.secondaryVideo].filter(
+    (element) => element instanceof HTMLVideoElement
+  );
 }
 
 function summarizeWebRtcCandidate(candidate) {
@@ -1501,6 +1567,66 @@ function requestWebRtcOffer() {
   webrtc.offerRequested = sendWebRtcSignal({ type: "viewer:ready" });
 }
 
+function resetWebRtcTrackMetadata() {
+  webrtc.trackCameraNamesByMid.clear();
+  webrtc.trackCameraNamesByOrder = [];
+  webrtc.trackCameraNamesByTrackId.clear();
+  webrtc.remoteTrackCount = 0;
+}
+
+function configureWebRtcTrackMetadata(tracks) {
+  resetWebRtcTrackMetadata();
+  if (!Array.isArray(tracks)) return;
+
+  tracks.forEach((track, index) => {
+    if (!isObject(track)) return;
+    const cameraName = normalizeCameraName(track.cameraName);
+    if (!isKnownCameraName(cameraName)) return;
+
+    webrtc.trackCameraNamesByOrder[index] = cameraName;
+    if (track.mid !== undefined && track.mid !== null) {
+      webrtc.trackCameraNamesByMid.set(String(track.mid), cameraName);
+    }
+  });
+
+  console.info(
+    `WebRTC remote track map ${
+      webrtc.trackCameraNamesByOrder.map((cameraName, index) => `${index}:${cameraName}`).join(",") || "empty"
+    }`
+  );
+}
+
+function getWebRtcCameraNameForTrackEvent(event) {
+  const trackIndex = webrtc.remoteTrackCount;
+  webrtc.remoteTrackCount += 1;
+
+  const mid = event.transceiver?.mid;
+  if (mid !== undefined && mid !== null) {
+    const cameraName = webrtc.trackCameraNamesByMid.get(String(mid));
+    if (isKnownCameraName(cameraName)) return cameraName;
+  }
+
+  const orderedCameraName = webrtc.trackCameraNamesByOrder[trackIndex];
+  if (isKnownCameraName(orderedCameraName)) return orderedCameraName;
+
+  return CAMERA_NAMES.find((cameraName) => !webrtc.remoteStreams.has(cameraName)) || "front";
+}
+
+function getWebRtcStatsCameraName(stat) {
+  if (stat?.mid !== undefined && stat.mid !== null) {
+    const cameraName = webrtc.trackCameraNamesByMid.get(String(stat.mid));
+    if (isKnownCameraName(cameraName)) return cameraName;
+  }
+
+  const trackIdentifier = stat?.trackIdentifier || stat?.trackId;
+  if (trackIdentifier) {
+    const cameraName = webrtc.trackCameraNamesByTrackId.get(String(trackIdentifier));
+    if (isKnownCameraName(cameraName)) return cameraName;
+  }
+
+  return "unknown";
+}
+
 function formatNullableNumber(value, digits = 1) {
   return Number.isFinite(value) ? value.toFixed(digits) : "unavailable";
 }
@@ -1526,65 +1652,74 @@ function startWebRtcPeerStats(pc) {
     window.clearInterval(webrtc.statsTimer);
   }
 
-  webrtc.inboundStats = null;
+  webrtc.inboundStats = new Map();
   webrtc.statsTimer = window.setInterval(async () => {
     if (webrtc.pc !== pc) return;
 
     try {
       const report = await pc.getStats();
-      let inbound = null;
+      const inboundStats = [];
       report.forEach((stat) => {
         if (stat.type === "inbound-rtp" && (!stat.kind || stat.kind === "video")) {
-          inbound = stat;
+          inboundStats.push(stat);
         }
       });
-      if (!inbound) return;
+      if (!inboundStats.length) return;
 
       const now = performance.now();
-      const previous = webrtc.inboundStats;
-      const elapsedSec = previous ? Math.max(0.001, (now - previous.loggedAtMs) / 1000) : 0;
+      const nextStats = new Map();
 
-      const framesDecodedDelta = previous ? (inbound.framesDecoded || 0) - (previous.framesDecoded || 0) : 0;
-      const bytesReceivedDelta = previous ? (inbound.bytesReceived || 0) - (previous.bytesReceived || 0) : 0;
-      const totalDecodeTimeDelta = previous ? (inbound.totalDecodeTime || 0) - (previous.totalDecodeTime || 0) : 0;
-      const jitterBufferDelayDelta = previous ? (inbound.jitterBufferDelay || 0) - (previous.jitterBufferDelay || 0) : 0;
-      const jitterBufferFramesDelta = previous
-        ? (inbound.jitterBufferEmittedCount || 0) - (previous.jitterBufferEmittedCount || 0)
-        : 0;
+      inboundStats.forEach((inbound) => {
+        const statKey = String(inbound.id || inbound.mid || inbound.ssrc || inbound.trackIdentifier || "video");
+        const previous = webrtc.inboundStats?.get(statKey) || null;
+        const elapsedSec = previous ? Math.max(0.001, (now - previous.loggedAtMs) / 1000) : 0;
 
-      const receiveFps = previous ? framesDecodedDelta / elapsedSec : null;
-      const receiveKbps = previous ? (bytesReceivedDelta * 8) / elapsedSec / 1000 : null;
-      const decodeMsPerFrame = framesDecodedDelta > 0 ? (totalDecodeTimeDelta * 1000) / framesDecodedDelta : null;
-      const jitterBufferMs =
-        jitterBufferFramesDelta > 0 ? (jitterBufferDelayDelta * 1000) / jitterBufferFramesDelta : null;
+        const framesDecodedDelta = previous ? (inbound.framesDecoded || 0) - (previous.framesDecoded || 0) : 0;
+        const bytesReceivedDelta = previous ? (inbound.bytesReceived || 0) - (previous.bytesReceived || 0) : 0;
+        const totalDecodeTimeDelta = previous ? (inbound.totalDecodeTime || 0) - (previous.totalDecodeTime || 0) : 0;
+        const jitterBufferDelayDelta = previous ? (inbound.jitterBufferDelay || 0) - (previous.jitterBufferDelay || 0) : 0;
+        const jitterBufferFramesDelta = previous
+          ? (inbound.jitterBufferEmittedCount || 0) - (previous.jitterBufferEmittedCount || 0)
+          : 0;
 
-      console.info(
-        [
-          "WebRTC browser receive stats",
-          `receiveFps=${formatNullableNumber(receiveFps)}`,
-          `networkReceiveKbps=${formatNullableNumber(receiveKbps, 0)}`,
-          `decodeMsPerFrame=${formatNullableNumber(decodeMsPerFrame)}`,
-          `jitterBufferMs=${formatNullableNumber(jitterBufferMs)}`,
-          `framesDropped=${inbound.framesDropped ?? "unavailable"}`,
-          `packetsLost=${inbound.packetsLost ?? "unavailable"}`
-        ].join(" ")
-      );
+        const receiveFps = previous ? framesDecodedDelta / elapsedSec : null;
+        const receiveKbps = previous ? (bytesReceivedDelta * 8) / elapsedSec / 1000 : null;
+        const decodeMsPerFrame = framesDecodedDelta > 0 ? (totalDecodeTimeDelta * 1000) / framesDecodedDelta : null;
+        const jitterBufferMs =
+          jitterBufferFramesDelta > 0 ? (jitterBufferDelayDelta * 1000) / jitterBufferFramesDelta : null;
+        const cameraName = getWebRtcStatsCameraName(inbound);
 
-      webrtc.inboundStats = {
-        loggedAtMs: now,
-        framesDecoded: inbound.framesDecoded || 0,
-        bytesReceived: inbound.bytesReceived || 0,
-        totalDecodeTime: inbound.totalDecodeTime || 0,
-        jitterBufferDelay: inbound.jitterBufferDelay || 0,
-        jitterBufferEmittedCount: inbound.jitterBufferEmittedCount || 0
-      };
+        console.info(
+          [
+            "WebRTC browser receive stats",
+            `camera=${cameraName}`,
+            `receiveFps=${formatNullableNumber(receiveFps)}`,
+            `networkReceiveKbps=${formatNullableNumber(receiveKbps, 0)}`,
+            `decodeMsPerFrame=${formatNullableNumber(decodeMsPerFrame)}`,
+            `jitterBufferMs=${formatNullableNumber(jitterBufferMs)}`,
+            `framesDropped=${inbound.framesDropped ?? "unavailable"}`,
+            `packetsLost=${inbound.packetsLost ?? "unavailable"}`
+          ].join(" ")
+        );
+
+        nextStats.set(statKey, {
+          loggedAtMs: now,
+          framesDecoded: inbound.framesDecoded || 0,
+          bytesReceived: inbound.bytesReceived || 0,
+          totalDecodeTime: inbound.totalDecodeTime || 0,
+          jitterBufferDelay: inbound.jitterBufferDelay || 0,
+          jitterBufferEmittedCount: inbound.jitterBufferEmittedCount || 0
+        });
+      });
+
+      webrtc.inboundStats = nextStats;
     } catch (error) {
       console.warn(`WebRTC browser stats unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, WEBRTC_STATS_INTERVAL_MS);
 }
 
-function startWebRtcRenderStats(video, stream) {
+function startWebRtcRenderStats(video, stream, cameraName = "unknown") {
   if (!video || typeof video.requestVideoFrameCallback !== "function") return;
   if (webrtc.renderStats?.stream === stream) return;
 
@@ -1594,6 +1729,7 @@ function startWebRtcRenderStats(video, stream) {
 
   webrtc.renderStats = {
     stream,
+    cameraName,
     lastLoggedAtMs: performance.now(),
     lastPresentedFrames: 0,
     callbackId: null
@@ -1624,6 +1760,7 @@ function startWebRtcRenderStats(video, stream) {
       console.info(
         [
           "WebRTC browser render stats",
+          `camera=${previous.cameraName || "unknown"}`,
           `renderFps=${formatNullableNumber(renderFps)}`,
           `receiveToRenderMs=${formatNullableNumber(receiveToRenderMs)}`,
           `captureToRenderMs=${formatNullableNumber(captureToRenderMs)}`,
@@ -1643,48 +1780,27 @@ function startWebRtcRenderStats(video, stream) {
   webrtc.renderStats.callbackId = video.requestVideoFrameCallback(onVideoFrame);
 }
 
-function attachWebRtcStream(stream) {
-  webrtc.remoteStream = stream;
-  state.primaryCameraName = "front";
+function attachWebRtcStream(cameraName, stream) {
+  const normalizedCameraName = normalizeCameraName(cameraName);
+  if (!isKnownCameraName(normalizedCameraName)) return;
 
-  for (const video of getWebRtcVideoElements()) {
-    if (video.srcObject !== stream) {
-      video.srcObject = stream;
-    }
-    const playResult = video.play();
-    if (playResult && typeof playResult.catch === "function") {
-      playResult.catch(() => {
-        // Autoplay can be blocked until the user interacts with the page.
-      });
-    }
-  }
+  webrtc.remoteStreams.set(normalizedCameraName, stream);
+  const feed = getCameraState(normalizedCameraName);
+  const track = stream.getVideoTracks()[0] || null;
+  const settings = typeof track?.getSettings === "function" ? track.getSettings() : {};
 
-  startWebRtcRenderStats(elements.video, stream);
-
-  const frontFeed = getCameraState("front");
-  if (frontFeed) {
-    frontFeed.frameSrc = "webrtc";
-    frontFeed.lastFrameAtMs = Date.now();
-    frontFeed.status = {
-      ...(frontFeed.status || {}),
-      name: "front",
+  if (feed) {
+    feed.frameSrc = "webrtc";
+    feed.lastFrameAtMs = Date.now();
+    feed.status = {
+      ...(feed.status || {}),
+      name: normalizedCameraName,
       available: true,
       streaming: true,
       backend: "webrtc",
+      width: Number(settings.width) || feed.status?.width || null,
+      height: Number(settings.height) || feed.status?.height || null,
       lastFrameAt: new Date().toISOString()
-    };
-  }
-
-  const backFeed = getCameraState("back");
-  if (backFeed) {
-    backFeed.frameSrc = "";
-    backFeed.status = {
-      ...(backFeed.status || {}),
-      name: "back",
-      available: false,
-      streaming: false,
-      backend: "disabled",
-      reason: "single-camera-webrtc"
     };
   }
 
@@ -1693,21 +1809,24 @@ function attachWebRtcStream(stream) {
 
 function clearWebRtcStream() {
   for (const video of getWebRtcVideoElements()) {
-    video.srcObject = null;
+    setVideoStream(video, null);
   }
 
-  webrtc.remoteStream = null;
-  const frontFeed = getCameraState("front");
-  if (frontFeed?.frameSrc === "webrtc") {
-    frontFeed.frameSrc = "";
-    frontFeed.status = {
-      ...(frontFeed.status || {}),
-      name: "front",
+  webrtc.remoteStreams.clear();
+  resetWebRtcTrackMetadata();
+
+  CAMERA_NAMES.forEach((cameraName) => {
+    const feed = getCameraState(cameraName);
+    if (feed?.frameSrc !== "webrtc") return;
+    feed.frameSrc = "";
+    feed.status = {
+      ...(feed.status || {}),
+      name: cameraName,
       streaming: false,
       backend: "webrtc",
       reason: "webrtc-disconnected"
     };
-  }
+  });
 
   renderCameraFeeds();
 }
@@ -1751,19 +1870,23 @@ function createWebRtcPeerConnection() {
   startWebRtcPeerStats(pc);
 
   pc.ontrack = (event) => {
-    console.info(`WebRTC remote track kind=${event.track.kind} id=${event.track.id}`);
+    if (event.track.kind !== "video") return;
+
+    const cameraName = getWebRtcCameraNameForTrackEvent(event);
+    const mid = event.transceiver?.mid ?? "-";
+    webrtc.trackCameraNamesByTrackId.set(event.track.id, cameraName);
+    console.info(`WebRTC remote track camera=${cameraName} kind=${event.track.kind} id=${event.track.id} mid=${mid}`);
     if (event.receiver && "playoutDelayHint" in event.receiver) {
       try {
         event.receiver.playoutDelayHint = 0;
-        console.info("WebRTC receiver playoutDelayHint=0");
+        console.info(`WebRTC receiver camera=${cameraName} playoutDelayHint=0`);
       } catch {
-        console.info("WebRTC receiver playoutDelayHint unavailable");
+        console.info(`WebRTC receiver camera=${cameraName} playoutDelayHint unavailable`);
       }
     }
-    const [stream] = event.streams;
-    attachWebRtcStream(stream || new MediaStream([event.track]));
+    attachWebRtcStream(cameraName, new MediaStream([event.track]));
     event.track.onended = () => {
-      scheduleWebRtcReconnect("remote track ended");
+      scheduleWebRtcReconnect(`remote ${cameraName} track ended`);
     };
   };
 
@@ -1837,6 +1960,7 @@ async function handleWebRtcOffer(message) {
   const pc = createWebRtcPeerConnection();
   webrtc.pc = pc;
   webrtc.offerRequested = false;
+  configureWebRtcTrackMetadata(message.tracks);
 
   logWebRtcSdp("Remote offer", sdp);
   await pc.setRemoteDescription(sdp);

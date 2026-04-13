@@ -11,7 +11,7 @@ Browser
   web/app.js
   - /ws?role=ui                         existing controls, telemetry, LiDAR
   - /webrtc?role=viewer&deviceId=pi-01  WebRTC signaling only
-  - RTCPeerConnection                   receives one live video track
+  - RTCPeerConnection                   receives front and back live video tracks
 
 PC backend
   backend/src/server.js
@@ -27,7 +27,7 @@ Raspberry Pi
   pi/webrtc_publisher.py
   - connects to /webrtc as role=pi
   - creates one RTCPeerConnection per browser viewer
-  - publishes one latest-frame-only camera track from pi/webrtc_camera.py
+  - publishes front and back latest-frame-only camera tracks from pi/webrtc_camera.py
 ```
 
 The first negotiation flow is:
@@ -35,7 +35,7 @@ The first negotiation flow is:
 1. Browser opens `/webrtc?role=viewer&deviceId=pi-01`.
 2. Pi publisher opens `/webrtc?role=pi&deviceId=pi-01`.
 3. Browser sends `viewer:ready`.
-4. Pi creates an offer with one video track and sends `webrtc:offer`.
+4. Pi creates an offer with two video tracks and sends `webrtc:offer`.
 5. Browser creates an answer and sends `webrtc:answer`.
 6. Browser and Pi log SDP, ICE candidates, ICE state, signaling state, peer
    connection state, capture timing, outbound stats, and browser receive/render
@@ -124,10 +124,14 @@ make pi-connect-webrtc-esc PC_IP=<pc-ip-or-tailscale-ip>
 Those targets start two Pi processes:
 
 - `pi/gateway.py` for the existing controls and telemetry path
-- `pi/webrtc_publisher.py` for the new one-camera WebRTC video path
+- `pi/webrtc_publisher.py` for the two-camera WebRTC video path
 
 They also set `PI_CAMERA_JPEG_ENABLED=0` so the old JPEG frame sender does not
 open the camera at the same time as the WebRTC publisher.
+
+LiDAR still runs through `pi/gateway.py`. The Makefile no longer forces a LiDAR
+serial port by default; pass `PI_LIDAR_PORT=/dev/ttyUSB1` only when the gateway
+startup log shows it is probing the wrong device.
 
 ### 4. Open the browser
 
@@ -146,7 +150,8 @@ http://<pc-ip>:8080?backendHost=<pc-ip>&deviceId=pi-01
 ### 5. Useful WebRTC knobs
 
 ```bash
-WEBRTC_CAMERA_INDEX=0
+WEBRTC_CAMERA_FRONT_INDEX=0
+WEBRTC_CAMERA_BACK_INDEX=1
 WEBRTC_CAMERA_BACKEND=auto     # auto | rpicam | opencv
 WEBRTC_CAMERA_WIDTH=640
 WEBRTC_CAMERA_HEIGHT=480
@@ -188,7 +193,7 @@ Pi publisher logs include:
 - camera capture FPS, dropped old frames, JPEG decode time, and
   capture-to-encode-input handoff time
 - outbound WebRTC frame rate, network send bitrate, packet rate, and encode time
-  per frame when aiortc exposes it
+  per frame when aiortc exposes it, tagged by camera
 
 Browser logs include:
 
@@ -198,7 +203,7 @@ Browser logs include:
 - local and remote ICE candidates
 - peer connection, ICE connection, ICE gathering, and signaling state
 - receive frame rate, network receive bitrate, decode time, jitter-buffer delay,
-  dropped frames, and packet loss
+  dropped frames, and packet loss, tagged by camera when browser stats expose it
 - render frame rate, receive-to-render delay, capture-to-render delay when the
   browser exposes it, render queue delay, and processing time
 
@@ -243,7 +248,7 @@ More stability:
 
 ## Current Limits
 
-- One camera only: front camera index `0` by default.
+- Two cameras: front camera index `0` and back camera index `1` by default.
 - Robot controls still use the existing backend `/ws` path.
 - The backend does not forward video media. It only forwards signaling.
 - Backend-managed camera recording still depends on the old JPEG frame path and
@@ -254,10 +259,8 @@ More stability:
 
 1. Add `RTCDataChannel` for control and telemetry after the video path is stable.
    Keep `/ws` controls as fallback during the migration.
-2. Add a second camera by creating a second camera track in `pi/webrtc_publisher.py`
-   and a second `<video>` attachment in `web/app.js`.
-3. Add TURN/STUN configuration to both the browser `RTCPeerConnection` and the
+2. Add TURN/STUN configuration to both the browser `RTCPeerConnection` and the
    Pi publisher `RTCPeerConnection`.
-4. Add camera switching by signaling the desired camera over the existing control
+3. Add camera switching by signaling the desired camera over the existing control
    path first, then later over the data channel.
-5. Move recording to WebRTC-compatible capture after the live path is reliable.
+4. Move recording to WebRTC-compatible capture after the live path is reliable.
