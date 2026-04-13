@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260410-2" />
+  <link rel="stylesheet" href="./styles.css?v=20260413-1" />
 </head>
 <body>
   <main id="app-root" class="app">
-    <img id="camera-feed" class="camera-feed" alt="Primary Raspberry Pi camera feed" />
+    <video id="camera-feed" class="camera-feed" autoplay playsinline muted aria-label="Primary Raspberry Pi camera feed"></video>
     <div class="overlay">
       <div class="lidar-side">
         <div class="lidar-map" aria-label="Live LiDAR map">
@@ -43,7 +43,7 @@
         <div class="camera-rail" aria-label="Front and back camera previews">
           <div id="primary-mini-feed-shell" class="primary-mini-feed-shell camera-panel" aria-label="Primary camera preview">
             <span id="primary-camera-label" class="camera-panel-label">Front</span>
-            <img id="primary-mini-feed" class="secondary-feed" alt="Primary robot camera preview" />
+            <video id="primary-mini-feed" class="secondary-feed" autoplay playsinline muted aria-label="Primary robot camera preview"></video>
           </div>
 
           <div id="secondary-feed-shell" class="secondary-feed-shell camera-panel" aria-label="Secondary camera feed">
@@ -199,6 +199,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260410-1"></script>
+  <script src="./app.js?v=20260413-1"></script>
 </body>
 </html>

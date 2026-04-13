@@ -55,6 +55,8 @@ const DRIVE_KEEPALIVE_MS = 200;
 const DRIVE_COMMAND_TTL_MS = 650;
 const BACKEND_RECONNECT_DELAY_MS = 1500;
 const BACKEND_STATE_SYNC_MS = 2000;
+const WEBRTC_RECONNECT_DELAY_MS = 1500;
+const WEBRTC_ICE_GATHERING_TIMEOUT_MS = 5000;
 const CAMERA_NAMES = ["front", "back"];
 const CAMERA_STREAM_FPS_MIN = 1;
 const CAMERA_STREAM_FPS_MAX = 12;
@@ -123,6 +125,17 @@ const backend = {
   deviceId: resolveDeviceId(),
   reconnectTimer: null,
   stateSyncTimer: null
+};
+
+const webrtc = {
+  enabled: urlParams.get("webrtc") !== "0",
+  ws: null,
+  wsUrl: resolveWebRtcSignalingUrl(),
+  viewerId: null,
+  pc: null,
+  remoteStream: null,
+  reconnectTimer: null,
+  offerRequested: false
 };
 
 const driveState = {
@@ -217,6 +230,16 @@ function resolveBackendApiBaseUrl() {
   const host = urlParams.get("backendHost") || window.location.hostname || "127.0.0.1";
   const port = urlParams.get("backendPort") || DEFAULT_BACKEND_PORT;
   return `${protocol}://${host}:${port}`;
+}
+
+function resolveWebRtcSignalingUrl() {
+  const explicitWsUrl = urlParams.get("webrtcWs");
+  if (explicitWsUrl) return explicitWsUrl;
+
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const host = urlParams.get("backendHost") || window.location.hostname || "127.0.0.1";
+  const port = urlParams.get("backendPort") || DEFAULT_BACKEND_PORT;
+  return `${protocol}://${host}:${port}/webrtc?role=viewer&deviceId=${encodeURIComponent(resolveDeviceId())}`;
 }
 
 function resolveDeviceId() {
@@ -367,17 +390,19 @@ function isRecordingSessionToggleable(summary) {
 }
 
 function renderCameraStreamControls() {
+  const usingWebRtc = webrtc.enabled;
+
   if (elements.cameraFramerateSlider) {
     elements.cameraFramerateSlider.min = String(cameraControlState.minFps);
     elements.cameraFramerateSlider.max = String(cameraControlState.maxFps);
     elements.cameraFramerateSlider.step = String(CAMERA_STREAM_FPS_STEP);
     elements.cameraFramerateSlider.value = String(clampCameraStreamFps(cameraControlState.desiredFps));
-    elements.cameraFramerateSlider.disabled = !deviceState.connected || cameraControlState.applying;
+    elements.cameraFramerateSlider.disabled = usingWebRtc || !deviceState.connected || cameraControlState.applying;
   }
 
   if (elements.cameraFramerateValue) {
     const value = cameraControlState.applying ? cameraControlState.desiredFps : cameraControlState.actualFps;
-    elements.cameraFramerateValue.textContent = formatCameraStreamFps(value, cameraControlState.applying);
+    elements.cameraFramerateValue.textContent = usingWebRtc ? "WebRTC" : formatCameraStreamFps(value, cameraControlState.applying);
   }
 }
 
@@ -460,6 +485,8 @@ function getCameraStatus(name) {
 
 function setImageSource(element, nextSrc) {
   if (!element) return;
+  if (element instanceof HTMLVideoElement) return;
+
   const currentSrc = element.getAttribute("src") || "";
   if (currentSrc === nextSrc) return;
 
@@ -1374,6 +1401,8 @@ function handleCommandAcceptedMessage(message) {
 }
 
 function handleCameraFrameMessage(message) {
+  if (webrtc.enabled) return;
+
   const frame = message.frame;
   if (!isObject(frame) || frame.deviceId !== backend.deviceId) return;
 
@@ -1421,6 +1450,355 @@ function handleBackendMessage(message) {
   if (message.type === "command:accepted") {
     handleCommandAcceptedMessage(message);
   }
+}
+
+function getWebRtcVideoElements() {
+  return [elements.video, elements.primaryMiniVideo].filter((element) => element instanceof HTMLVideoElement);
+}
+
+function summarizeWebRtcCandidate(candidate) {
+  if (!candidate) return "end-of-candidates";
+  const candidateLine = String(candidate.candidate || "").trim();
+  if (!candidateLine) return "empty-candidate";
+
+  const tokens = candidateLine.replace(/^candidate:/, "").split(/\s+/);
+  const foundation = tokens[0] || "-";
+  const component = tokens[1] || "-";
+  const protocol = tokens[2] || "-";
+  const ip = tokens[4] || "-";
+  const port = tokens[5] || "-";
+  const typeIndex = tokens.indexOf("typ");
+  const candidateType = typeIndex >= 0 ? tokens[typeIndex + 1] || "-" : "-";
+  return `foundation=${foundation} component=${component} protocol=${protocol} address=${ip}:${port} type=${candidateType}`;
+}
+
+function logWebRtcSdp(label, description) {
+  const type = description?.type || "-";
+  const sdp = String(description?.sdp || "");
+  console.info(`${label} SDP type=${type} bytes=${sdp.length}`);
+  if (sdp) {
+    console.info(`${label} SDP body\n${sdp}`);
+  }
+}
+
+function sendWebRtcSignal(payload) {
+  if (!webrtc.ws || webrtc.ws.readyState !== WebSocket.OPEN) return false;
+  webrtc.ws.send(
+    JSON.stringify({
+      ...payload,
+      viewerId: webrtc.viewerId
+    })
+  );
+  return true;
+}
+
+function requestWebRtcOffer() {
+  if (webrtc.offerRequested) return;
+  webrtc.offerRequested = sendWebRtcSignal({ type: "viewer:ready" });
+}
+
+function attachWebRtcStream(stream) {
+  webrtc.remoteStream = stream;
+  state.primaryCameraName = "front";
+
+  for (const video of getWebRtcVideoElements()) {
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+    const playResult = video.play();
+    if (playResult && typeof playResult.catch === "function") {
+      playResult.catch(() => {
+        // Autoplay can be blocked until the user interacts with the page.
+      });
+    }
+  }
+
+  const frontFeed = getCameraState("front");
+  if (frontFeed) {
+    frontFeed.frameSrc = "webrtc";
+    frontFeed.lastFrameAtMs = Date.now();
+    frontFeed.status = {
+      ...(frontFeed.status || {}),
+      name: "front",
+      available: true,
+      streaming: true,
+      backend: "webrtc",
+      lastFrameAt: new Date().toISOString()
+    };
+  }
+
+  const backFeed = getCameraState("back");
+  if (backFeed) {
+    backFeed.frameSrc = "";
+    backFeed.status = {
+      ...(backFeed.status || {}),
+      name: "back",
+      available: false,
+      streaming: false,
+      backend: "disabled",
+      reason: "single-camera-webrtc"
+    };
+  }
+
+  renderCameraFeeds();
+}
+
+function clearWebRtcStream() {
+  for (const video of getWebRtcVideoElements()) {
+    video.srcObject = null;
+  }
+
+  webrtc.remoteStream = null;
+  const frontFeed = getCameraState("front");
+  if (frontFeed?.frameSrc === "webrtc") {
+    frontFeed.frameSrc = "";
+    frontFeed.status = {
+      ...(frontFeed.status || {}),
+      name: "front",
+      streaming: false,
+      backend: "webrtc",
+      reason: "webrtc-disconnected"
+    };
+  }
+
+  renderCameraFeeds();
+}
+
+function closeWebRtcPeerConnection(clearStream = true) {
+  webrtc.offerRequested = false;
+  const pc = webrtc.pc;
+  webrtc.pc = null;
+  if (pc) {
+    pc.ontrack = null;
+    pc.onicecandidate = null;
+    pc.onconnectionstatechange = null;
+    pc.oniceconnectionstatechange = null;
+    pc.onicegatheringstatechange = null;
+    pc.onsignalingstatechange = null;
+    pc.close();
+  }
+
+  if (clearStream) {
+    clearWebRtcStream();
+  }
+}
+
+function scheduleWebRtcReconnect(reason) {
+  if (!webrtc.enabled) return;
+  console.warn(`WebRTC reconnect scheduled: ${reason}`);
+  closeWebRtcPeerConnection(true);
+  window.clearTimeout(webrtc.reconnectTimer);
+  webrtc.reconnectTimer = window.setTimeout(() => {
+    if (webrtc.ws?.readyState === WebSocket.OPEN) {
+      requestWebRtcOffer();
+      return;
+    }
+    connectWebRtcSignaling();
+  }, WEBRTC_RECONNECT_DELAY_MS);
+}
+
+function createWebRtcPeerConnection() {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+
+  pc.ontrack = (event) => {
+    console.info(`WebRTC remote track kind=${event.track.kind} id=${event.track.id}`);
+    const [stream] = event.streams;
+    attachWebRtcStream(stream || new MediaStream([event.track]));
+    event.track.onended = () => {
+      scheduleWebRtcReconnect("remote track ended");
+    };
+  };
+
+  pc.onicecandidate = (event) => {
+    console.info(`WebRTC local ICE ${summarizeWebRtcCandidate(event.candidate)}`);
+    sendWebRtcSignal({
+      type: "webrtc:ice",
+      candidate: event.candidate ? event.candidate.toJSON() : null
+    });
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (webrtc.pc !== pc) return;
+    console.info(`WebRTC peer connection state=${pc.connectionState}`);
+    if (pc.connectionState === "failed") {
+      scheduleWebRtcReconnect("peer connection failed");
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (webrtc.pc !== pc) return;
+    console.info(`WebRTC ICE connection state=${pc.iceConnectionState}`);
+    if (pc.iceConnectionState === "failed") {
+      scheduleWebRtcReconnect("ICE failed");
+    }
+  };
+
+  pc.onicegatheringstatechange = () => {
+    if (webrtc.pc !== pc) return;
+    console.info(`WebRTC ICE gathering state=${pc.iceGatheringState}`);
+  };
+
+  pc.onsignalingstatechange = () => {
+    if (webrtc.pc !== pc) return;
+    console.info(`WebRTC signaling state=${pc.signalingState}`);
+  };
+
+  return pc;
+}
+
+function waitForWebRtcIceGatheringComplete(pc) {
+  if (pc.iceGatheringState === "complete") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timeoutId = window.setTimeout(done, WEBRTC_ICE_GATHERING_TIMEOUT_MS);
+
+    function done() {
+      window.clearTimeout(timeoutId);
+      pc.removeEventListener("icegatheringstatechange", onIceGatheringStateChange);
+      resolve();
+    }
+
+    function onIceGatheringStateChange() {
+      if (pc.iceGatheringState === "complete") {
+        done();
+      }
+    }
+
+    pc.addEventListener("icegatheringstatechange", onIceGatheringStateChange);
+  });
+}
+
+async function handleWebRtcOffer(message) {
+  if (message.deviceId && message.deviceId !== backend.deviceId) return;
+  const sdp = message.sdp;
+  if (!isObject(sdp) || !sdp.sdp || !sdp.type) return;
+
+  closeWebRtcPeerConnection(true);
+  const pc = createWebRtcPeerConnection();
+  webrtc.pc = pc;
+  webrtc.offerRequested = false;
+
+  logWebRtcSdp("Remote offer", sdp);
+  await pc.setRemoteDescription(sdp);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await waitForWebRtcIceGatheringComplete(pc);
+  logWebRtcSdp("Local answer", pc.localDescription);
+
+  sendWebRtcSignal({
+    type: "webrtc:answer",
+    sdp: {
+      type: pc.localDescription.type,
+      sdp: pc.localDescription.sdp
+    }
+  });
+}
+
+async function handleWebRtcRemoteIce(message) {
+  if (!webrtc.pc) return;
+  if (message.deviceId && message.deviceId !== backend.deviceId) return;
+
+  console.info(`WebRTC remote ICE ${summarizeWebRtcCandidate(message.candidate)}`);
+  await webrtc.pc.addIceCandidate(message.candidate || null);
+}
+
+function handleWebRtcStatus(message) {
+  if (message.deviceId && message.deviceId !== backend.deviceId) return;
+
+  console.info(`WebRTC Pi signaling status=${message.status}`);
+  if (message.status === "online") {
+    requestWebRtcOffer();
+    return;
+  }
+
+  closeWebRtcPeerConnection(true);
+}
+
+function handleWebRtcReady(message) {
+  webrtc.viewerId = message.viewerId || webrtc.viewerId;
+  console.info(`WebRTC signaling ready viewerId=${webrtc.viewerId || "-"} piConnected=${Boolean(message.piConnected)}`);
+  if (message.piConnected) {
+    requestWebRtcOffer();
+  }
+}
+
+async function handleWebRtcSignalMessage(message) {
+  if (!isObject(message)) return;
+
+  if (message.type === "signal:ready") {
+    handleWebRtcReady(message);
+    return;
+  }
+
+  if (message.type === "pi:webrtc-status") {
+    handleWebRtcStatus(message);
+    return;
+  }
+
+  if (message.type === "webrtc:offer") {
+    await handleWebRtcOffer(message);
+    return;
+  }
+
+  if (message.type === "webrtc:ice") {
+    await handleWebRtcRemoteIce(message);
+    return;
+  }
+
+  if (message.type === "webrtc:error") {
+    console.warn(`WebRTC publisher error: ${message.error || "unknown error"}`);
+    scheduleWebRtcReconnect("publisher error");
+  }
+}
+
+function connectWebRtcSignaling() {
+  if (!webrtc.enabled) return;
+
+  const readyState = webrtc.ws?.readyState;
+  if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) {
+    return;
+  }
+
+  if (!window.RTCPeerConnection) {
+    console.warn("WebRTC is not available in this browser.");
+    return;
+  }
+
+  const ws = new WebSocket(webrtc.wsUrl);
+  webrtc.ws = ws;
+
+  ws.addEventListener("open", () => {
+    console.info("Connected to WebRTC signaling socket.");
+  });
+
+  ws.addEventListener("close", () => {
+    if (webrtc.ws !== ws) return;
+
+    webrtc.ws = null;
+    webrtc.viewerId = null;
+    webrtc.offerRequested = false;
+    closeWebRtcPeerConnection(true);
+    window.clearTimeout(webrtc.reconnectTimer);
+    webrtc.reconnectTimer = window.setTimeout(connectWebRtcSignaling, WEBRTC_RECONNECT_DELAY_MS);
+  });
+
+  ws.addEventListener("message", (event) => {
+    try {
+      const message = JSON.parse(String(event.data || "{}"));
+      void handleWebRtcSignalMessage(message).catch((error) => {
+        console.warn(`WebRTC signaling error: ${error instanceof Error ? error.message : String(error)}`);
+        scheduleWebRtcReconnect("signaling handler error");
+      });
+    } catch (error) {
+      console.warn(`Invalid WebRTC signaling payload: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
+
+  ws.addEventListener("error", () => {
+    ws.close();
+  });
 }
 
 async function syncBackendState() {
@@ -2132,6 +2510,10 @@ function setupEvents() {
   });
   window.addEventListener("beforeunload", () => {
     stopAllDrive();
+    closeWebRtcPeerConnection(false);
+    if (webrtc.ws) {
+      webrtc.ws.close();
+    }
   });
 }
 
@@ -2150,6 +2532,7 @@ function boot() {
   }
 
   connectBackendSocket();
+  connectWebRtcSignaling();
   renderCameraFeeds();
 }
 

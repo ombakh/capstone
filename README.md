@@ -4,6 +4,8 @@ Browser-based robot control app with directional controls, backend command routi
 Pi telemetry, dual Pi camera streaming, session recording for LiDAR plus both
 camera feeds, and optional ESP32 serial bridging.
 
+WebRTC video first pass: [docs/webrtc-video-first-pass.md](./docs/webrtc-video-first-pass.md)
+
 ## Current Tested Setup
 
 The most reliable development path in this repo is:

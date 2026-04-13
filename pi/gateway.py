@@ -139,6 +139,7 @@ class Config:
     camera_frame_width: int
     camera_frame_height: int
     camera_jpeg_quality: int
+    camera_jpeg_enabled: bool
     lidar_enabled: bool
     lidar_port: str
     lidar_max_distance_mm: int
@@ -196,6 +197,7 @@ class Config:
             camera_frame_width=env_int("CAMERA_FRAME_WIDTH", 960),
             camera_frame_height=env_int("CAMERA_FRAME_HEIGHT", 720),
             camera_jpeg_quality=env_int("CAMERA_JPEG_QUALITY", 60),
+            camera_jpeg_enabled=env_flag("PI_CAMERA_JPEG_ENABLED", default=True),
             lidar_enabled=env_flag("LIDAR_ENABLED", default=True),
             lidar_port=os.getenv("LIDAR_SERIAL_PORT", lidar_default_port),
             lidar_max_distance_mm=env_int("LIDAR_MAX_DISTANCE_MM", 6000),
@@ -1034,8 +1036,14 @@ class CameraManager:
         frame_height: int,
         stream_hz: float,
         jpeg_quality: int,
+        enabled: bool = True,
     ) -> None:
         self.stream_hz = clamp_camera_stream_hz(stream_hz)
+        self.enabled = enabled
+        if not self.enabled:
+            self._workers: Dict[str, CameraWorker] = {}
+            return
+
         camera_commands = find_camera_stream_command()
         self._workers = {
             "front": CameraWorker(
@@ -1089,6 +1097,7 @@ class CameraManager:
 
     def snapshot(self) -> JsonDict:
         return {
+            "jpegEnabled": self.enabled,
             "streamHz": round(self.stream_hz, 2),
             "minStreamHz": CAMERA_STREAM_HZ_MIN,
             "maxStreamHz": CAMERA_STREAM_HZ_MAX,
@@ -1426,6 +1435,7 @@ class PiGateway:
             frame_height=config.camera_frame_height,
             stream_hz=config.camera_stream_hz,
             jpeg_quality=config.camera_jpeg_quality,
+            enabled=config.camera_jpeg_enabled,
         )
         self.temperature = PiTemperatureReader()
         self.lidar = LidarBridge(
@@ -1547,6 +1557,7 @@ class PiGateway:
                     "motorDriver": self.config.motor_driver,
                     "motorEcho": self.config.motor_echo,
                     "motorEchoOnly": self.config.motor_echo_only,
+                    "cameraJpegEnabled": self.config.camera_jpeg_enabled,
                     "cameraIndexes": [self.config.camera_front_index, self.config.camera_back_index],
                     "cameraStreamHz": self.cameras.stream_hz,
                     "cameraFrameSize": [self.config.camera_frame_width, self.config.camera_frame_height],
@@ -1968,11 +1979,12 @@ async def async_main() -> None:
     )
     config = Config.from_env()
     logging.info(
-        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s lidarEnabled=%s",
+        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s lidarEnabled=%s cameraJpegEnabled=%s",
         config.device_id,
         config.ws_url,
         config.motor_driver,
         config.lidar_enabled,
+        config.camera_jpeg_enabled,
     )
     gateway = PiGateway(config)
     try:

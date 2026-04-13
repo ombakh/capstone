@@ -151,6 +151,15 @@ Message types:
 - Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`, `camera:frame`, `recording:status`
 - Backend -> Pi: `ui:command`
 
+WebRTC signaling path: `/webrtc`
+
+- Pi publisher connect: `/webrtc?role=pi&deviceId=pi-01&token=<PI_DEVICE_TOKEN>`
+- Browser viewer connect: `/webrtc?role=viewer&deviceId=pi-01`
+- Signaling messages: `viewer:ready`, `webrtc:offer`, `webrtc:answer`, `webrtc:ice`
+- The backend relays only signaling. WebRTC video media flows peer-to-peer.
+
+See [WebRTC Video First Pass](../docs/webrtc-video-first-pass.md) for the run flow.
+
 ## Common Development Topology
 
 The currently documented development flow is:

@@ -1,0 +1,207 @@
+# WebRTC Video First Pass
+
+This is the first minimal WebRTC video path for the robot. It keeps the
+existing control and telemetry path on the current backend `/ws` socket, and
+adds a separate WebRTC signaling socket at `/webrtc`.
+
+## Architecture Overview
+
+```text
+Browser
+  web/app.js
+  - /ws?role=ui                         existing controls, telemetry, LiDAR
+  - /webrtc?role=viewer&deviceId=pi-01  WebRTC signaling only
+  - RTCPeerConnection                   receives one live video track
+
+PC backend
+  backend/src/server.js
+  - /ws                                 existing app protocol
+  - /webrtc                             WebSocket signaling relay
+  - no video media passes through this server
+
+Raspberry Pi
+  pi/gateway.py
+  - existing controls, motor status, LiDAR, temperature
+  - run with PI_CAMERA_JPEG_ENABLED=0 for the WebRTC path
+
+  pi/webrtc_publisher.py
+  - connects to /webrtc as role=pi
+  - creates one RTCPeerConnection per browser viewer
+  - publishes one camera track from pi/webrtc_camera.py
+```
+
+The first negotiation flow is:
+
+1. Browser opens `/webrtc?role=viewer&deviceId=pi-01`.
+2. Pi publisher opens `/webrtc?role=pi&deviceId=pi-01`.
+3. Browser sends `viewer:ready`.
+4. Pi creates an offer with one video track and sends `webrtc:offer`.
+5. Browser creates an answer and sends `webrtc:answer`.
+6. Browser and Pi log SDP, ICE candidates, ICE state, signaling state, and peer
+   connection state.
+
+## Dependency List
+
+PC backend:
+
+- Node `>=18`
+- Existing backend packages: `express`, `cors`, `dotenv`, `ws`
+
+Browser:
+
+- A browser with native WebRTC support
+- No new frontend package dependency
+
+Raspberry Pi:
+
+- Existing Pi packages from `pi/requirements.txt`
+- `aiortc>=1.14.0`
+- `Pillow>=10.0.0`
+- Preferred camera command: `rpicam-vid` or `libcamera-vid`
+- Optional fallback camera package: `python3-opencv`
+
+## File Structure
+
+```text
+backend/src/server.js       existing backend plus /webrtc signaling relay
+web/index.html              main video element for WebRTC playback
+web/app.js                  browser WebRTC signaling and peer connection code
+pi/gateway.py               existing Pi gateway plus PI_CAMERA_JPEG_ENABLED
+pi/webrtc_camera.py         rpicam/libcamera and OpenCV aiortc video tracks
+pi/webrtc_publisher.py      Pi-side WebRTC publisher
+pi/requirements.txt         Pi Python dependencies
+Makefile                    run targets for the first WebRTC path
+```
+
+## Run Steps
+
+### 1. Start the PC backend and web app
+
+From the repo root on the PC:
+
+```bash
+make pc-setup
+make pc-start
+```
+
+This starts:
+
+- backend: `http://0.0.0.0:3000`
+- web app: `http://127.0.0.1:8080`
+
+### 2. Prepare the Pi environment
+
+From the repo root on the Pi:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+make pi-setup
+```
+
+If the Pi does not have `rpicam-vid` or `libcamera-vid`, install the OpenCV
+fallback:
+
+```bash
+sudo apt-get install -y python3-opencv
+```
+
+### 3. Run controls plus WebRTC video from the Pi
+
+Echo/no-hardware controls:
+
+```bash
+make pi-connect-webrtc-echo PC_IP=<pc-ip-or-tailscale-ip>
+```
+
+Direct ESC controls:
+
+```bash
+make pi-connect-webrtc-esc PC_IP=<pc-ip-or-tailscale-ip>
+```
+
+Those targets start two Pi processes:
+
+- `pi/gateway.py` for the existing controls and telemetry path
+- `pi/webrtc_publisher.py` for the new one-camera WebRTC video path
+
+They also set `PI_CAMERA_JPEG_ENABLED=0` so the old JPEG frame sender does not
+open the camera at the same time as the WebRTC publisher.
+
+### 4. Open the browser
+
+On the PC:
+
+```text
+http://127.0.0.1:8080?deviceId=pi-01
+```
+
+From another machine on the same network:
+
+```text
+http://<pc-ip>:8080?backendHost=<pc-ip>&deviceId=pi-01
+```
+
+### 5. Useful WebRTC knobs
+
+```bash
+WEBRTC_CAMERA_INDEX=0
+WEBRTC_CAMERA_BACKEND=auto     # auto | rpicam | opencv
+WEBRTC_CAMERA_WIDTH=960
+WEBRTC_CAMERA_HEIGHT=720
+WEBRTC_CAMERA_FPS=15
+WEBRTC_CAMERA_JPEG_QUALITY=70
+WEBRTC_LOG_SDP=1
+```
+
+Browser query-string overrides:
+
+```text
+?webrtc=0                     disables the WebRTC client path
+?webrtcWs=<url-encoded-signaling-url>
+```
+
+## Logging
+
+Backend logs use the `[webrtc]` prefix and include:
+
+- signaling connects and disconnects
+- SDP offer/answer type and full SDP body
+- ICE candidate summaries
+
+Pi publisher logs include:
+
+- local offer SDP
+- remote answer SDP
+- local ICE candidates embedded in SDP
+- remote ICE candidates from the browser
+- peer connection, ICE connection, ICE gathering, and signaling state
+
+Browser logs include:
+
+- signaling socket status
+- remote offer SDP
+- local answer SDP
+- local and remote ICE candidates
+- peer connection, ICE connection, ICE gathering, and signaling state
+
+## Current Limits
+
+- One camera only: front camera index `0` by default.
+- Robot controls still use the existing backend `/ws` path.
+- The backend does not forward video media. It only forwards signaling.
+- Backend-managed camera recording still depends on the old JPEG frame path and
+  is not part of this first WebRTC slice.
+- TURN server support is not wired yet.
+
+## Next-Step Plan
+
+1. Add `RTCDataChannel` for control and telemetry after the video path is stable.
+   Keep `/ws` controls as fallback during the migration.
+2. Add a second camera by creating a second camera track in `pi/webrtc_publisher.py`
+   and a second `<video>` attachment in `web/app.js`.
+3. Add TURN/STUN configuration to both the browser `RTCPeerConnection` and the
+   Pi publisher `RTCPeerConnection`.
+4. Add camera switching by signaling the desired camera over the existing control
+   path first, then later over the data channel.
+5. Move recording to WebRTC-compatible capture after the live path is reliable.
