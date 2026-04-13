@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camera Control Overlay</title>
-  <link rel="stylesheet" href="./styles.css?v=20260413-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260413-2" />
 </head>
 <body>
   <main id="app-root" class="app">
@@ -48,7 +48,7 @@
 
           <div id="secondary-feed-shell" class="secondary-feed-shell camera-panel" aria-label="Secondary camera feed">
             <span id="secondary-camera-label" class="camera-panel-label">Back</span>
-            <img id="secondary-feed" class="secondary-feed" alt="Secondary robot camera feed" />
+            <video id="secondary-feed" class="secondary-feed" autoplay playsinline muted aria-label="Secondary robot camera feed"></video>
             <button id="switch-camera" class="switch-camera" type="button" aria-label="Swap front and back Pi camera feeds">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M17 8a5 5 0 0 0-8.5-3.5" />
@@ -199,6 +199,6 @@
     </div>
   </main>
 
-  <script src="./app.js?v=20260413-1"></script>
+  <script src="./app.js?v=20260413-2"></script>
 </body>
 </html>

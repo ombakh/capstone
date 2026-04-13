@@ -10,8 +10,10 @@ BACKEND_PORT ?= 3000
 HOST_IP ?= $(or $(PC_IP),$(MAC_IP))
 PI_DEVICE_ID ?= pi-01
 PI_LIDAR_ENABLED ?= 1
-PI_LIDAR_PORT ?= /dev/ttyUSB0
+PI_LIDAR_PORT ?=
 PI_VENV_DIR ?= .venv
+PI_GATEWAY_ENV = BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED)$(if $(strip $(PI_LIDAR_PORT)), LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT),)
+PI_WEBRTC_ENV = BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID)
 
 .PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pc-setup pc-backend pc-web pc-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-run-esc pi-run-webrtc pi-connect-echo pi-connect-esc pi-connect-webrtc-echo pi-connect-webrtc-esc pi-backend-check pi-keys
 
@@ -35,8 +37,8 @@ help:
 	@echo "  make pi-run-webrtc   - Run the Pi WebRTC camera publisher"
 	@echo "  make pi-connect-echo PC_IP=<ip> - Connect Pi echo mode to the PC backend with LiDAR streaming"
 	@echo "  make pi-connect-esc  PC_IP=<ip> - Connect Pi ESC mode to the PC backend with LiDAR streaming"
-	@echo "  make pi-connect-webrtc-echo PC_IP=<ip> - Connect Pi controls in echo mode and publish one WebRTC camera"
-	@echo "  make pi-connect-webrtc-esc  PC_IP=<ip> - Connect Pi controls in ESC mode and publish one WebRTC camera"
+	@echo "  make pi-connect-webrtc-echo PC_IP=<ip> - Connect Pi controls in echo mode and publish two WebRTC cameras"
+	@echo "  make pi-connect-webrtc-esc  PC_IP=<ip> - Connect Pi controls in ESC mode and publish two WebRTC cameras"
 	@echo "  make pi-backend-check PC_IP=<ip> - Check backend health from the Pi"
 	@echo "  make pi-keys         - Run keyboard-to-ESP serial bridge"
 	@echo "  make help   - Show this help message"
@@ -117,7 +119,7 @@ pi-connect-echo:
 		exit 1; \
 	fi
 	@. "$(PI_VENV_DIR)/bin/activate"; \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_DRIVER=echo python3 pi/gateway.py
+	$(PI_GATEWAY_ENV) PI_MOTOR_DRIVER=echo python3 pi/gateway.py
 
 pi-connect-esc:
 	@if [ -z "$(HOST_IP)" ]; then \
@@ -129,7 +131,7 @@ pi-connect-esc:
 		exit 1; \
 	fi
 	@. "$(PI_VENV_DIR)/bin/activate"; \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_DRIVER=esc python3 pi/gateway.py
+	$(PI_GATEWAY_ENV) PI_MOTOR_DRIVER=esc python3 pi/gateway.py
 
 pi-connect-webrtc-echo:
 	@if [ -z "$(HOST_IP)" ]; then \
@@ -142,8 +144,8 @@ pi-connect-webrtc-echo:
 	fi
 	@. "$(PI_VENV_DIR)/bin/activate"; \
 	trap 'kill 0 >/dev/null 2>&1' INT TERM EXIT; \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_DRIVER=echo PI_CAMERA_JPEG_ENABLED=0 python3 pi/gateway.py & \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) python3 pi/webrtc_publisher.py & \
+	$(PI_GATEWAY_ENV) PI_MOTOR_DRIVER=echo PI_CAMERA_JPEG_ENABLED=0 python3 pi/gateway.py & \
+	$(PI_WEBRTC_ENV) python3 pi/webrtc_publisher.py & \
 	wait
 
 pi-connect-webrtc-esc:
@@ -157,8 +159,8 @@ pi-connect-webrtc-esc:
 	fi
 	@. "$(PI_VENV_DIR)/bin/activate"; \
 	trap 'kill 0 >/dev/null 2>&1' INT TERM EXIT; \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED) LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT) PI_MOTOR_DRIVER=esc PI_CAMERA_JPEG_ENABLED=0 python3 pi/gateway.py & \
-	BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) python3 pi/webrtc_publisher.py & \
+	$(PI_GATEWAY_ENV) PI_MOTOR_DRIVER=esc PI_CAMERA_JPEG_ENABLED=0 python3 pi/gateway.py & \
+	$(PI_WEBRTC_ENV) python3 pi/webrtc_publisher.py & \
 	wait
 
 pi-backend-check:

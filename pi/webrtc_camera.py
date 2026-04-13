@@ -154,7 +154,7 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
         self._latest_event = asyncio.Event()
         self._has_unconsumed_frame = False
         self._timing_logger = CameraTimingLogger(
-            source=f"{command_name}:mjpeg",
+            source=f"{command_name}:mjpeg:index={config.camera_index}",
             log_interval_sec=config.stats_interval_sec,
         )
         self._started_once = False
@@ -343,7 +343,7 @@ class OpenCvCameraTrack(VideoStreamTrack):
         self._capture: Optional[object] = None
         self._last_frame_monotonic = 0.0
         self._timing_logger = CameraTimingLogger(
-            source="opencv",
+            source=f"opencv:index={config.camera_index}",
             log_interval_sec=config.stats_interval_sec,
         )
 

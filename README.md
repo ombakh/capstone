@@ -152,19 +152,18 @@ If you are on campus or guest Wi-Fi, use the PC's Tailscale IP instead of its
 local Wi-Fi IP.
 
 `make pi-connect-echo` now carries LiDAR scans over the same backend path by
-default. Override the serial device with `PI_LIDAR_PORT=/dev/ttyUSB1` or disable
-streaming with `PI_LIDAR_ENABLED=0`.
+default. The Makefile leaves the serial device unset unless you pass
+`PI_LIDAR_PORT=/dev/ttyUSB1`, so `gateway.py` can apply its motor-driver-specific
+default. Disable streaming with `PI_LIDAR_ENABLED=0`.
 
 ### 4. Use the web app
 
 Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
 
-If two camera modules are attached to the Pi, the main view and side preview now
-render those live Pi feeds over the backend WebSocket path instead of using the
-browser's local webcam. By default, the gateway streams camera index `0` as the
-front feed and camera index `1` as the back feed. The frontend settings menu
-also exposes a camera FPS slider so you can raise or lower the live stream rate
-without restarting the Pi gateway.
+If two camera modules are attached to the Pi, the main view and side preview use
+camera index `0` as the front feed and camera index `1` as the back feed. The
+WebRTC targets publish both feeds over WebRTC; the older non-WebRTC Pi targets
+still carry camera frames over the backend WebSocket path.
 
 Expected Pi output:
 
@@ -302,7 +301,11 @@ python3 pi/gateway.py
 - `make pi-run-esc`: run the Pi gateway with direct ESC control from Pi GPIO
 - `make pi-connect-echo PC_IP=<ip>`: connect the Pi echo gateway to the PC backend
 - `make pi-connect-esc PC_IP=<ip>`: connect the Pi ESC gateway to the PC backend
+- `make pi-connect-webrtc-echo PC_IP=<ip>`: connect echo controls and publish front/back WebRTC video
+- `make pi-connect-webrtc-esc PC_IP=<ip>`: connect ESC controls and publish front/back WebRTC video
 - `CAMERA_STREAM_HZ`, `CAMERA_FRAME_WIDTH`, `CAMERA_FRAME_HEIGHT`, `CAMERA_JPEG_QUALITY`: tune Pi camera streaming
+- `WEBRTC_CAMERA_FRONT_INDEX`, `WEBRTC_CAMERA_BACK_INDEX`, `WEBRTC_CAMERA_WIDTH`, `WEBRTC_CAMERA_HEIGHT`, `WEBRTC_CAMERA_FPS`: tune WebRTC camera streaming
+- `PI_LIDAR_PORT=/dev/ttyUSB1`: override the LiDAR serial port when the gateway default is wrong
 - `PI_MOTOR_DRIVER=esc`, `ESC_LEFT_GPIO`, `ESC_RIGHT_GPIO`, `ESC_MAX_SPEED`, `ESC_WATCHDOG_TIMEOUT_MS`: tune Pi ESC control
 - `make pi-keys`: send direct arrow-key serial input to an attached ESP32
 - `make help`: list available targets

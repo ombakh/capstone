@@ -1979,11 +1979,12 @@ async def async_main() -> None:
     )
     config = Config.from_env()
     logging.info(
-        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s lidarEnabled=%s cameraJpegEnabled=%s",
+        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s lidarEnabled=%s lidarPort=%s cameraJpegEnabled=%s",
         config.device_id,
         config.ws_url,
         config.motor_driver,
         config.lidar_enabled,
+        config.lidar_port,
         config.camera_jpeg_enabled,
     )
     gateway = PiGateway(config)
