@@ -238,11 +238,8 @@ def describe_codec(codec: Any) -> str:
 class WebRtcPublisher:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.relays = {camera_name: MediaRelay() for camera_name in config.camera_names}
-        self.source_tracks = {
-            camera_name: create_camera_track(config.camera_track_config(camera_name))
-            for camera_name in config.camera_names
-        }
+        self.relays: Dict[str, MediaRelay] = {}
+        self.source_tracks: Dict[str, Any] = {}
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.stats_tasks: Dict[str, asyncio.Task[None]] = {}
         self.peer_senders: Dict[str, List[Tuple[str, RTCRtpSender]]] = {}
@@ -260,9 +257,55 @@ class WebRtcPublisher:
             finally:
                 self.ws = None
                 await self._close_all_peers()
+                self._stop_media_sources("signaling_session_closed")
 
             await asyncio.sleep(backoff)
             backoff = min(self.config.reconnect_max_sec, backoff * 2.0)
+
+    def _stop_media_sources(self, reason: str) -> None:
+        if not self.source_tracks and not self.relays:
+            return
+
+        logging.info("Stopping WebRTC media sources reason=%s", reason)
+        for camera_name, source_track in list(self.source_tracks.items()):
+            try:
+                logging.info("Stopping WebRTC camera source camera=%s", camera_name)
+                source_track.stop()
+            except Exception as exc:
+                logging.warning("WebRTC camera source stop failed camera=%s error=%s", camera_name, exc)
+
+        self.source_tracks.clear()
+        self.relays.clear()
+
+    def _reset_media_sources(self, reason: str) -> None:
+        self._stop_media_sources(f"reset:{reason}")
+        self.relays = {camera_name: MediaRelay() for camera_name in self.config.camera_names}
+        self.source_tracks = {
+            camera_name: create_camera_track(self.config.camera_track_config(camera_name))
+            for camera_name in self.config.camera_names
+        }
+        logging.info("WebRTC media sources ready reason=%s cameras=%s", reason, ",".join(self.config.camera_names))
+
+    def _ensure_media_sources(self, reason: str) -> None:
+        missing_cameras = [
+            camera_name
+            for camera_name in self.config.camera_names
+            if camera_name not in self.source_tracks or camera_name not in self.relays
+        ]
+        ended_cameras = [
+            camera_name
+            for camera_name, source_track in self.source_tracks.items()
+            if getattr(source_track, "readyState", "live") != "live"
+        ]
+
+        if missing_cameras or ended_cameras:
+            logging.info(
+                "WebRTC media source refresh needed reason=%s missing=%s ended=%s",
+                reason,
+                ",".join(missing_cameras) or "-",
+                ",".join(ended_cameras) or "-",
+            )
+            self._reset_media_sources(reason)
 
     async def _run_session(self) -> None:
         logging.info("Connecting to WebRTC signaling: %s", self.config.signaling_url)
@@ -464,6 +507,7 @@ class WebRtcPublisher:
 
     async def _create_peer(self, viewer_id: str) -> RTCPeerConnection:
         await self._close_peer(viewer_id)
+        self._ensure_media_sources(f"create_peer:{viewer_id}")
         pc = RTCPeerConnection()
         self.peers[viewer_id] = pc
         self.peer_senders[viewer_id] = []
@@ -581,6 +625,8 @@ class WebRtcPublisher:
             return
         logging.info("Closing peer connection viewerId=%s", viewer_id)
         await pc.close()
+        if not self.peers:
+            self._stop_media_sources(f"last_peer_closed:{viewer_id}")
 
     async def _close_all_peers(self) -> None:
         viewer_ids = list(self.peers.keys())
@@ -620,8 +666,7 @@ class WebRtcPublisher:
 
     async def close(self) -> None:
         await self._close_all_peers()
-        for source_track in self.source_tracks.values():
-            source_track.stop()
+        self._stop_media_sources("publisher_close")
 
 
 async def async_main() -> None:
