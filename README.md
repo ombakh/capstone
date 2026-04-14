@@ -168,7 +168,7 @@ still carry camera frames over the backend WebSocket path.
 Expected Pi output:
 
 ```text
-Motor command [echo-only] id=... drive direction=forward speed=0.35 durationMs=1500
+Motor command [echo-only] id=... drive direction=forward speed=0.15 durationMs=3000
 Motor command [echo-only] id=... stop
 ```
 

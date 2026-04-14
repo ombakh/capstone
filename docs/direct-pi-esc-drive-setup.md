@@ -185,11 +185,11 @@ Default pulse behavior:
 - Forward pulse range: `1100 us` to `2000 us`
 - Reverse pulse range: disabled by default
 - Arm delay: `3.0 s`
-- Watchdog timeout: `1500 ms`
-- Max speed clamp: `0.35`
+- Watchdog timeout: `3000 ms`
+- Max speed clamp: `0.15`
 - Update rate: `50 Hz`
 - Servo signal frequency: `50 Hz`
-- Pulse refresh: `250 ms`
+- Pulse refresh: disabled by default
 
 Directional mixing in the Pi controller:
 
@@ -222,12 +222,12 @@ These are the drive-related variables used by the Pi gateway:
 | `ESC_REVERSE_MIN_PULSE_US` | `1440` | Minimum reverse pulse |
 | `ESC_REVERSE_MAX_PULSE_US` | `1100` | Maximum reverse pulse |
 | `ESC_ARM_DELAY_SEC` | `3.0` | Time spent arming before drive is allowed |
-| `ESC_WATCHDOG_TIMEOUT_MS` | `1500` | Failsafe timeout to return to neutral |
-| `ESC_MAX_SPEED` | `0.35` | Max UI-requested speed allowed by the Pi |
+| `ESC_WATCHDOG_TIMEOUT_MS` | `3000` | Failsafe timeout to return to neutral |
+| `ESC_MAX_SPEED` | `0.15` | Max UI-requested speed allowed by the Pi |
 | `ESC_RAMP_STEP_US` | `8` | Pulse ramping step |
 | `ESC_UPDATE_HZ` | `50` | Pulse update loop rate |
 | `ESC_SERVO_FREQUENCY_HZ` | `50` | ESC servo pulse frequency |
-| `ESC_PULSE_REFRESH_MS` | `250` | Re-issue current pulses while holding a drive command |
+| `ESC_PULSE_REFRESH_MS` | `0` | Re-issue current pulses while holding a drive command; `0` disables refresh |
 
 ## Bidirectional ESCs
 

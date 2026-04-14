@@ -189,12 +189,12 @@ class Config:
             esc_reverse_min_pulse_us=env_int("ESC_REVERSE_MIN_PULSE_US", 1440),
             esc_reverse_max_pulse_us=env_int("ESC_REVERSE_MAX_PULSE_US", 1100),
             esc_arm_delay_sec=env_float("ESC_ARM_DELAY_SEC", 3.0),
-            esc_watchdog_timeout_ms=env_int("ESC_WATCHDOG_TIMEOUT_MS", 1500),
-            esc_max_speed=env_float("ESC_MAX_SPEED", 0.35),
+            esc_watchdog_timeout_ms=env_int("ESC_WATCHDOG_TIMEOUT_MS", 3000),
+            esc_max_speed=env_float("ESC_MAX_SPEED", 0.15),
             esc_ramp_step_us=env_int("ESC_RAMP_STEP_US", 8),
             esc_update_hz=env_float("ESC_UPDATE_HZ", 50.0),
             esc_servo_frequency_hz=env_int("ESC_SERVO_FREQUENCY_HZ", 50),
-            esc_pulse_refresh_ms=env_int("ESC_PULSE_REFRESH_MS", 250),
+            esc_pulse_refresh_ms=env_int("ESC_PULSE_REFRESH_MS", 0),
             camera_front_index=env_int_any(("CAMERA_FRONT_INDEX", "CAMERA_LEFT_INDEX"), 0),
             camera_back_index=env_int_any(("CAMERA_BACK_INDEX", "CAMERA_RIGHT_INDEX"), 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
@@ -418,7 +418,11 @@ class EscMotorController:
         self.ramp_step_us = clamp_int(config.esc_ramp_step_us, 1, 250)
         self.update_interval_sec = 1.0 / clamp_float(config.esc_update_hz, 10.0, 200.0)
         self.servo_frequency_hz = clamp_int(config.esc_servo_frequency_hz, 40, 500)
-        self.pulse_refresh_interval_sec = clamp_int(config.esc_pulse_refresh_ms, 50, 1000) / 1000.0
+        self.pulse_refresh_interval_sec = (
+            clamp_int(config.esc_pulse_refresh_ms, 50, 1000) / 1000.0
+            if config.esc_pulse_refresh_ms > 0
+            else 0.0
+        )
 
         self._pi: Optional[Any] = None
         self._last_connect_attempt = 0.0
@@ -673,8 +677,13 @@ class EscMotorController:
         )
         requested_ttl_ms = duration_ms if duration_ms > 0 else self.watchdog_timeout_ms
         ttl_ms = clamp_int(max(requested_ttl_ms, self.watchdog_timeout_ms), 100, 5000)
+        pulses_changed = (
+            left_pulse_us != self._target_left_pulse_us
+            or right_pulse_us != self._target_right_pulse_us
+        )
         self._set_target_pulses(left_pulse_us, right_pulse_us)
-        self._apply_pulses(left_pulse_us, right_pulse_us)
+        if pulses_changed:
+            self._apply_pulses(left_pulse_us, right_pulse_us)
         self._command_deadline = time.monotonic() + (ttl_ms / 1000.0)
         self._active_direction = direction
 
@@ -730,7 +739,10 @@ class EscMotorController:
             self.ramp_step_us,
         )
         if next_left == self._current_left_pulse_us and next_right == self._current_right_pulse_us:
-            if now - self._last_pulse_refresh_at >= self.pulse_refresh_interval_sec:
+            if (
+                self.pulse_refresh_interval_sec > 0
+                and now - self._last_pulse_refresh_at >= self.pulse_refresh_interval_sec
+            ):
                 self._apply_pulses(self._current_left_pulse_us, self._current_right_pulse_us)
             return
 
