@@ -185,7 +185,7 @@ Default pulse behavior:
 - Forward pulse range: `1100 us` to `2000 us`
 - Reverse pulse range: disabled by default
 - Arm delay: `3.0 s`
-- Watchdog timeout: `650 ms`
+- Watchdog timeout: `1500 ms`
 - Max speed clamp: `0.35`
 - Update rate: `50 Hz`
 
@@ -209,7 +209,7 @@ These are the drive-related variables used by the Pi gateway:
 | `PI_MOTOR_DRIVER` | `esc` for this setup | Select direct Pi ESC mode |
 | `ESC_LEFT_GPIO` | `18` | Left ESC signal pin |
 | `ESC_RIGHT_GPIO` | `19` | Right ESC signal pin |
-| `ESC_GPIOCHIP` | `-1` | Auto-try `gpiochip0`, then `gpiochip4`; set explicitly if needed |
+| `ESC_GPIOCHIP` | `-1` | Auto-try `gpiochip4`, then `gpiochip0`; set explicitly if needed |
 | `ESC_LEFT_INVERTED` | `0` | Invert left side direction if needed |
 | `ESC_RIGHT_INVERTED` | `0` | Invert right side direction if needed |
 | `ESC_BIDIRECTIONAL` | `0` | Enable reverse pulses |
@@ -220,7 +220,7 @@ These are the drive-related variables used by the Pi gateway:
 | `ESC_REVERSE_MIN_PULSE_US` | `1440` | Minimum reverse pulse |
 | `ESC_REVERSE_MAX_PULSE_US` | `1100` | Maximum reverse pulse |
 | `ESC_ARM_DELAY_SEC` | `3.0` | Time spent arming before drive is allowed |
-| `ESC_WATCHDOG_TIMEOUT_MS` | `650` | Failsafe timeout to return to neutral |
+| `ESC_WATCHDOG_TIMEOUT_MS` | `1500` | Failsafe timeout to return to neutral |
 | `ESC_MAX_SPEED` | `0.35` | Max UI-requested speed allowed by the Pi |
 | `ESC_RAMP_STEP_US` | `18` | Pulse ramping step |
 | `ESC_UPDATE_HZ` | `50` | Pulse update loop rate |

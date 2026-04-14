@@ -188,7 +188,7 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_MOTOR_ECHO_ONLY` default: `0` (legacy compatibility shortcut for `PI_MOTOR_DRIVER=echo`)
 - `ESC_LEFT_GPIO` default: `18`
 - `ESC_RIGHT_GPIO` default: `19`
-- `ESC_GPIOCHIP` default: `-1` (auto-try `gpiochip0`, then `gpiochip4`)
+- `ESC_GPIOCHIP` default: `-1` (auto-try `gpiochip4`, then `gpiochip0`)
 - `ESC_LEFT_INVERTED` / `ESC_RIGHT_INVERTED` default: `0`
 - `ESC_BIDIRECTIONAL` default: `0`
 - `ESC_ARM_PULSE_US` default: `1000`
@@ -198,7 +198,7 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `ESC_REVERSE_MIN_PULSE_US` default: `1440`
 - `ESC_REVERSE_MAX_PULSE_US` default: `1100`
 - `ESC_ARM_DELAY_SEC` default: `3.0`
-- `ESC_WATCHDOG_TIMEOUT_MS` default: `650`
+- `ESC_WATCHDOG_TIMEOUT_MS` default: `1500`
 - `ESC_MAX_SPEED` default: `0.35`
 - `ESC_RAMP_STEP_US` default: `18`
 - `ESC_UPDATE_HZ` default: `50`

@@ -187,7 +187,7 @@ class Config:
             esc_reverse_min_pulse_us=env_int("ESC_REVERSE_MIN_PULSE_US", 1440),
             esc_reverse_max_pulse_us=env_int("ESC_REVERSE_MAX_PULSE_US", 1100),
             esc_arm_delay_sec=env_float("ESC_ARM_DELAY_SEC", 3.0),
-            esc_watchdog_timeout_ms=env_int("ESC_WATCHDOG_TIMEOUT_MS", 650),
+            esc_watchdog_timeout_ms=env_int("ESC_WATCHDOG_TIMEOUT_MS", 1500),
             esc_max_speed=env_float("ESC_MAX_SPEED", 0.35),
             esc_ramp_step_us=env_int("ESC_RAMP_STEP_US", 18),
             esc_update_hz=env_float("ESC_UPDATE_HZ", 50.0),
@@ -429,7 +429,7 @@ class EscMotorController:
     def _candidate_gpiochips(self) -> Tuple[int, ...]:
         if self.gpiochip >= 0:
             return (self.gpiochip,)
-        return (0, 4)
+        return (4, 0)
 
     def _can_attempt_connect(self) -> bool:
         now = time.monotonic()
@@ -650,7 +650,8 @@ class EscMotorController:
         right_pulse_us = self._pulse_for_signed_speed(
             self._signed_speed_for_side(direction, "right", speed_ratio)
         )
-        ttl_ms = clamp_int(duration_ms or self.watchdog_timeout_ms, 50, 5000)
+        requested_ttl_ms = duration_ms if duration_ms > 0 else self.watchdog_timeout_ms
+        ttl_ms = clamp_int(max(requested_ttl_ms, self.watchdog_timeout_ms), 100, 5000)
         self._set_target_pulses(left_pulse_us, right_pulse_us)
         self._command_deadline = time.monotonic() + (ttl_ms / 1000.0)
         self._active_direction = direction
