@@ -531,6 +531,10 @@ class EscMotorController:
                 "forwardMax": self.forward_max_pulse_us,
                 "reverseMin": self.reverse_min_pulse_us,
                 "reverseMax": self.reverse_max_pulse_us,
+                "currentLeft": self._current_left_pulse_us,
+                "currentRight": self._current_right_pulse_us,
+                "targetLeft": self._target_left_pulse_us,
+                "targetRight": self._target_right_pulse_us,
             },
             "signal": {
                 "servoFrequencyHz": self.servo_frequency_hz,
@@ -592,6 +596,9 @@ class EscMotorController:
             signed_speed = speed_ratio if side == "left" else (-speed_ratio if self.bidirectional else 0.0)
         else:
             signed_speed = 0.0
+
+        if side_inverted and not self.bidirectional:
+            return signed_speed
 
         return -signed_speed if side_inverted else signed_speed
 
@@ -667,6 +674,7 @@ class EscMotorController:
         requested_ttl_ms = duration_ms if duration_ms > 0 else self.watchdog_timeout_ms
         ttl_ms = clamp_int(max(requested_ttl_ms, self.watchdog_timeout_ms), 100, 5000)
         self._set_target_pulses(left_pulse_us, right_pulse_us)
+        self._apply_pulses(left_pulse_us, right_pulse_us)
         self._command_deadline = time.monotonic() + (ttl_ms / 1000.0)
         self._active_direction = direction
 
@@ -690,6 +698,8 @@ class EscMotorController:
                 "requestedSpeed": round(requested_speed, 3),
                 "appliedSpeed": round(applied_speed, 3),
                 "durationMs": ttl_ms,
+                "leftPulseUs": left_pulse_us,
+                "rightPulseUs": right_pulse_us,
             },
         )
 
