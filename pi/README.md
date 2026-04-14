@@ -23,6 +23,7 @@ the WebRTC publisher owns the camera. See
 From the repo root on the Pi:
 
 ```bash
+sudo apt-get install -y swig build-essential python3-dev liblgpio-dev
 python3 -m venv .venv
 source .venv/bin/activate
 make pi-setup
@@ -38,12 +39,8 @@ Optional for the OpenCV fallback:
 sudo apt-get install -y python3-opencv
 ```
 
-For direct ESC control you also need the `pigpio` daemon available on the Pi:
-
-```bash
-sudo apt-get install -y pigpio
-sudo systemctl enable --now pigpiod
-```
+Direct ESC control uses the native `lgpio` library. Install those system
+packages before `make pi-setup` so the Python package can build.
 
 ## Run
 
@@ -97,7 +94,7 @@ Echo mode:
 ESC mode:
 
 1. Start the backend and web app on the PC with `make pc-start`.
-2. Activate the Pi virtual environment and make sure `pigpiod` is running.
+2. Activate the Pi virtual environment and make sure `lgpio` imports correctly.
 3. Wire the ESC signal and ground leads to the Pi.
 4. Run `make pi-connect-esc PC_IP=<pc-ip-or-tailscale-ip>`.
 5. Open the web app, wait for the motor panel, click `Arm Motors`, then use the arrow keys.
@@ -191,6 +188,7 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_MOTOR_ECHO_ONLY` default: `0` (legacy compatibility shortcut for `PI_MOTOR_DRIVER=echo`)
 - `ESC_LEFT_GPIO` default: `18`
 - `ESC_RIGHT_GPIO` default: `19`
+- `ESC_GPIOCHIP` default: `-1` (auto-try `gpiochip0`, then `gpiochip4`)
 - `ESC_LEFT_INVERTED` / `ESC_RIGHT_INVERTED` default: `0`
 - `ESC_BIDIRECTIONAL` default: `1`
 - `ESC_ARM_PULSE_US` default: `1500`
@@ -244,7 +242,7 @@ Echo mode:
 Direct ESC mode:
 
 - Web UI requests `motor_status`, then sends `arm_motors`, `drive`, and `stop`.
-- Gateway uses `pigpio` to output servo-style pulses on the configured GPIO pins.
+- Gateway uses `lgpio` to output servo-style pulses on the configured GPIO pins.
 - The Pi keeps the ESCs at neutral while disarmed and during the arm delay.
 - The web UI only enables the arrow keys after the Pi reports `readyForDrive=true`.
 - If command refresh stops, the watchdog returns both ESCs to neutral.

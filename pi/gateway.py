@@ -44,9 +44,9 @@ except ImportError:  # pragma: no cover
     RPLidar = None
 
 try:
-    import pigpio  # type: ignore
+    import lgpio  # type: ignore
 except ImportError:  # pragma: no cover
-    pigpio = None
+    lgpio = None
 
 
 JsonDict = Dict[str, Any]
@@ -117,6 +117,7 @@ class Config:
     motor_echo_only: bool
     esc_left_gpio: int
     esc_right_gpio: int
+    esc_gpiochip: int
     esc_left_inverted: bool
     esc_right_inverted: bool
     esc_bidirectional: bool
@@ -175,6 +176,7 @@ class Config:
             motor_echo_only=motor_echo_only,
             esc_left_gpio=env_int("ESC_LEFT_GPIO", 18),
             esc_right_gpio=env_int("ESC_RIGHT_GPIO", 19),
+            esc_gpiochip=env_int("ESC_GPIOCHIP", -1),
             esc_left_inverted=env_flag("ESC_LEFT_INVERTED", default=False),
             esc_right_inverted=env_flag("ESC_RIGHT_INVERTED", default=False),
             esc_bidirectional=env_flag("ESC_BIDIRECTIONAL", default=True),
@@ -336,10 +338,66 @@ def find_camera_stream_command() -> Tuple[str, ...]:
     return tuple(available)
 
 
+class LgpioServoConnection:
+    def __init__(self, handle: int, chip: int, servo_frequency_hz: int = 50) -> None:
+        self.handle = handle
+        self.chip = chip
+        self.servo_frequency_hz = servo_frequency_hz
+        self.connected = True
+
+    @staticmethod
+    def open(
+        candidate_chips: Tuple[int, ...],
+        left_gpio: int,
+        right_gpio: int,
+        neutral_pulse_us: int,
+    ) -> "LgpioServoConnection":
+        if lgpio is None:
+            raise RuntimeError("python package 'lgpio' is not installed")
+
+        errors: List[str] = []
+        for chip in candidate_chips:
+            handle: Optional[int] = None
+            try:
+                handle = lgpio.gpiochip_open(chip)
+                lgpio.gpio_claim_output(handle, left_gpio)
+                if right_gpio != left_gpio:
+                    lgpio.gpio_claim_output(handle, right_gpio)
+
+                connection = LgpioServoConnection(handle, chip)
+                connection.set_servo_pulsewidth(left_gpio, neutral_pulse_us)
+                connection.set_servo_pulsewidth(right_gpio, neutral_pulse_us)
+                return connection
+            except Exception as exc:
+                errors.append(f"gpiochip{chip}: {exc}")
+                if handle is not None:
+                    try:
+                        lgpio.gpiochip_close(handle)
+                    except Exception:
+                        pass
+
+        detail = "; ".join(errors) if errors else "no GPIO chips were attempted"
+        raise RuntimeError(detail)
+
+    def set_servo_pulsewidth(self, gpio: int, pulse_width_us: int) -> None:
+        if lgpio is None:
+            raise RuntimeError("python package 'lgpio' is not installed")
+        if not self.connected:
+            raise RuntimeError("GPIO chip is closed")
+        lgpio.tx_servo(self.handle, gpio, int(pulse_width_us), self.servo_frequency_hz)
+
+    def stop(self) -> None:
+        if lgpio is None or not self.connected:
+            return
+        self.connected = False
+        lgpio.gpiochip_close(self.handle)
+
+
 class EscMotorController:
     def __init__(self, config: Config) -> None:
         self.left_gpio = config.esc_left_gpio
         self.right_gpio = config.esc_right_gpio
+        self.gpiochip = config.esc_gpiochip
         self.left_inverted = config.esc_left_inverted
         self.right_inverted = config.esc_right_inverted
         self.bidirectional = config.esc_bidirectional
@@ -366,7 +424,12 @@ class EscMotorController:
         self._target_right_pulse_us = self.neutral_pulse_us
         self._command_deadline: Optional[float] = None
         self._active_direction = "stop"
-        self._last_error = "" if pigpio is not None else "python package 'pigpio' is not installed"
+        self._last_error = "" if lgpio is not None else "python package 'lgpio' is not installed"
+
+    def _candidate_gpiochips(self) -> Tuple[int, ...]:
+        if self.gpiochip >= 0:
+            return (self.gpiochip,)
+        return (0, 4)
 
     def _can_attempt_connect(self) -> bool:
         now = time.monotonic()
@@ -395,9 +458,9 @@ class EscMotorController:
         self._disconnect()
 
     def connect(self) -> bool:
-        if pigpio is None:
+        if lgpio is None:
             self._connected = False
-            self._set_error("python package 'pigpio' is not installed")
+            self._set_error("python package 'lgpio' is not installed")
             return False
 
         if self._pi is not None and getattr(self._pi, "connected", False):
@@ -408,26 +471,14 @@ class EscMotorController:
             return False
 
         try:
-            pi_connection = pigpio.pi()
+            pi_connection = LgpioServoConnection.open(
+                self._candidate_gpiochips(),
+                self.left_gpio,
+                self.right_gpio,
+                self.neutral_pulse_us,
+            )
         except Exception as exc:
-            self._set_error(f"unable to connect to pigpio daemon: {exc}")
-            self._connected = False
-            return False
-
-        if not getattr(pi_connection, "connected", False):
-            close_quietly(pi_connection, "stop")
-            self._set_error("pigpio daemon unavailable; run 'sudo pigpiod' on the Pi")
-            self._connected = False
-            return False
-
-        try:
-            pi_connection.set_mode(self.left_gpio, pigpio.OUTPUT)
-            pi_connection.set_mode(self.right_gpio, pigpio.OUTPUT)
-            pi_connection.set_servo_pulsewidth(self.left_gpio, self.neutral_pulse_us)
-            pi_connection.set_servo_pulsewidth(self.right_gpio, self.neutral_pulse_us)
-        except Exception as exc:
-            close_quietly(pi_connection, "stop")
-            self._set_error(f"unable to initialize ESC GPIO outputs: {exc}")
+            self._set_error(f"unable to initialize ESC GPIO outputs with lgpio: {exc}")
             self._connected = False
             return False
 
@@ -435,7 +486,8 @@ class EscMotorController:
         self._connected = True
         self._set_error("")
         logging.info(
-            "ESC driver ready on GPIO %s (left) and GPIO %s (right)",
+            "ESC driver ready via lgpio gpiochip%s on GPIO %s (left) and GPIO %s (right)",
+            pi_connection.chip,
             self.left_gpio,
             self.right_gpio,
         )
@@ -455,6 +507,11 @@ class EscMotorController:
             "maxSpeed": round(self.max_speed, 2),
             "watchdogTimeoutMs": self.watchdog_timeout_ms,
             "pins": {
+                "gpiochip": (
+                    self._pi.chip
+                    if self._pi is not None
+                    else (self.gpiochip if self.gpiochip >= 0 else None)
+                ),
                 "leftSignalGpio": self.left_gpio,
                 "rightSignalGpio": self.right_gpio,
             },

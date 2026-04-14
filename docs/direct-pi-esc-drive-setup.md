@@ -113,17 +113,14 @@ device-to-device traffic.
 From the repo root on the Pi:
 
 ```bash
+sudo apt-get install -y swig build-essential python3-dev liblgpio-dev
 python3 -m venv .venv
 source .venv/bin/activate
 make pi-setup
 ```
 
-For direct GPIO pulse output you also need `pigpio` running:
-
-```bash
-sudo apt-get install -y pigpio
-sudo systemctl enable --now pigpiod
-```
+Direct GPIO pulse output uses the native `lgpio` library. Install those system
+packages before `make pi-setup` so the Python package can build.
 
 ## Start the Pi in ESC Mode
 
@@ -212,6 +209,7 @@ These are the drive-related variables used by the Pi gateway:
 | `PI_MOTOR_DRIVER` | `esc` for this setup | Select direct Pi ESC mode |
 | `ESC_LEFT_GPIO` | `18` | Left ESC signal pin |
 | `ESC_RIGHT_GPIO` | `19` | Right ESC signal pin |
+| `ESC_GPIOCHIP` | `-1` | Auto-try `gpiochip0`, then `gpiochip4`; set explicitly if needed |
 | `ESC_LEFT_INVERTED` | `0` | Invert left side direction if needed |
 | `ESC_RIGHT_INVERTED` | `0` | Invert right side direction if needed |
 | `ESC_BIDIRECTIONAL` | `1` | Enable reverse pulses |
@@ -254,7 +252,7 @@ Use this order when you first power the drivetrain:
 1. Put the robot on a stand or otherwise keep the drive wheels off the ground.
 2. Verify the PC backend is running.
 3. Verify `curl http://<pc-ip>:3000/health` works from the Pi.
-4. Start `pigpiod` on the Pi.
+4. Make sure `lgpio` imports inside the Pi virtual environment.
 5. Start the Pi in ESC mode.
 6. Open the web app on the PC.
 7. Wait for the motor panel to show the Pi as connected.
@@ -290,7 +288,7 @@ BACKEND_WS_BASE=ws://<pc-ip>:3000 PI_MOTOR_DRIVER=esc ESC_MAX_SPEED=0.15 python3
 
 If the robot does not drive correctly, check these in order:
 
-- No movement at all: `pigpiod` is not running, wrong GPIO pins, or ESC ground is not shared with the Pi
+- No movement at all: `lgpio` cannot open the GPIO chip, wrong GPIO pins, or ESC ground is not shared with the Pi
 - Motor panel never becomes ready: Pi cannot reach backend, or ESC driver could not initialize
 - One side spins backward on `Up`: set `ESC_LEFT_INVERTED=1` or `ESC_RIGHT_INVERTED=1`
 - Reverse does nothing: your ESC is likely forward-only and should use `ESC_BIDIRECTIONAL=0`
