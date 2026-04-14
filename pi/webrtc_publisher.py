@@ -26,7 +26,8 @@ from webrtc_camera import CameraTrackConfig, create_camera_track
 
 
 JsonDict = Dict[str, Any]
-CAMERA_NAMES: Tuple[str, str] = ("front", "back")
+SUPPORTED_CAMERA_NAMES: Tuple[str, str] = ("front", "back")
+DEFAULT_CAMERA_NAMES: Tuple[str, ...] = ("front",)
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -50,6 +51,31 @@ def env_int_any(names: tuple[str, ...], default: int) -> int:
         if raw is not None:
             return int(raw)
     return default
+
+
+def env_camera_names() -> Tuple[str, ...]:
+    raw = os.getenv("WEBRTC_CAMERA_NAMES") or os.getenv("WEBRTC_CAMERAS")
+    if raw is None:
+        if env_flag("WEBRTC_SECOND_CAMERA_ENABLED", default=False):
+            return SUPPORTED_CAMERA_NAMES
+        return DEFAULT_CAMERA_NAMES
+
+    camera_names: List[str] = []
+    for item in raw.split(","):
+        camera_name = item.strip().lower()
+        if camera_name in {"left", "primary"}:
+            camera_name = "front"
+        elif camera_name in {"right", "secondary"}:
+            camera_name = "back"
+
+        if camera_name not in SUPPORTED_CAMERA_NAMES:
+            raise ValueError(f"unsupported WebRTC camera name: {camera_name}")
+        if camera_name not in camera_names:
+            camera_names.append(camera_name)
+
+    if not camera_names:
+        raise ValueError("WEBRTC_CAMERA_NAMES must include at least one camera")
+    return tuple(camera_names)
 
 
 def parse_json_message(raw: Any) -> Optional[JsonDict]:
@@ -76,6 +102,7 @@ class Config:
     camera_jpeg_quality: int
     video_codec: str
     stats_interval_sec: float
+    camera_names: Tuple[str, ...]
 
     @property
     def signaling_url(self) -> str:
@@ -109,6 +136,7 @@ class Config:
             camera_jpeg_quality=env_int("WEBRTC_CAMERA_JPEG_QUALITY", env_int("CAMERA_JPEG_QUALITY", 70)),
             video_codec=os.getenv("WEBRTC_VIDEO_CODEC", "H264"),
             stats_interval_sec=env_float("WEBRTC_STATS_INTERVAL_SEC", 2.0),
+            camera_names=env_camera_names(),
         )
 
     def camera_track_config(self, camera_name: str) -> CameraTrackConfig:
@@ -210,10 +238,8 @@ def describe_codec(codec: Any) -> str:
 class WebRtcPublisher:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.relays = {camera_name: MediaRelay() for camera_name in CAMERA_NAMES}
-        self.source_tracks = {
-            camera_name: create_camera_track(config.camera_track_config(camera_name)) for camera_name in CAMERA_NAMES
-        }
+        self.relays: Dict[str, MediaRelay] = {}
+        self.source_tracks: Dict[str, Any] = {}
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.stats_tasks: Dict[str, asyncio.Task[None]] = {}
         self.peer_senders: Dict[str, List[Tuple[str, RTCRtpSender]]] = {}
@@ -224,17 +250,68 @@ class WebRtcPublisher:
         while True:
             try:
                 await self._run_session()
+                logging.warning("WebRTC signaling session closed")
                 backoff = 1.0
             except Exception as exc:
                 logging.warning("WebRTC signaling session ended: %s", exc)
+            finally:
+                self.ws = None
                 await self._close_all_peers()
-                await asyncio.sleep(backoff)
-                backoff = min(self.config.reconnect_max_sec, backoff * 2.0)
+                self._stop_media_sources("signaling_session_closed")
+
+            await asyncio.sleep(backoff)
+            backoff = min(self.config.reconnect_max_sec, backoff * 2.0)
+
+    def _stop_media_sources(self, reason: str) -> None:
+        if not self.source_tracks and not self.relays:
+            return
+
+        logging.info("Stopping WebRTC media sources reason=%s", reason)
+        for camera_name, source_track in list(self.source_tracks.items()):
+            try:
+                logging.info("Stopping WebRTC camera source camera=%s", camera_name)
+                source_track.stop()
+            except Exception as exc:
+                logging.warning("WebRTC camera source stop failed camera=%s error=%s", camera_name, exc)
+
+        self.source_tracks.clear()
+        self.relays.clear()
+
+    def _reset_media_sources(self, reason: str) -> None:
+        self._stop_media_sources(f"reset:{reason}")
+        self.relays = {camera_name: MediaRelay() for camera_name in self.config.camera_names}
+        self.source_tracks = {
+            camera_name: create_camera_track(self.config.camera_track_config(camera_name))
+            for camera_name in self.config.camera_names
+        }
+        logging.info("WebRTC media sources ready reason=%s cameras=%s", reason, ",".join(self.config.camera_names))
+
+    def _ensure_media_sources(self, reason: str) -> None:
+        missing_cameras = [
+            camera_name
+            for camera_name in self.config.camera_names
+            if camera_name not in self.source_tracks or camera_name not in self.relays
+        ]
+        ended_cameras = [
+            camera_name
+            for camera_name, source_track in self.source_tracks.items()
+            if getattr(source_track, "readyState", "live") != "live"
+        ]
+
+        if missing_cameras or ended_cameras:
+            logging.info(
+                "WebRTC media source refresh needed reason=%s missing=%s ended=%s",
+                reason,
+                ",".join(missing_cameras) or "-",
+                ",".join(ended_cameras) or "-",
+            )
+            self._reset_media_sources(reason)
 
     async def _run_session(self) -> None:
         logging.info("Connecting to WebRTC signaling: %s", self.config.signaling_url)
         async with websockets.connect(self.config.signaling_url, ping_interval=20, ping_timeout=20) as ws:
             self.ws = ws
+            logging.info("WebRTC signaling connected")
             async for raw in ws:
                 message = parse_json_message(raw)
                 if message:
@@ -430,11 +507,12 @@ class WebRtcPublisher:
 
     async def _create_peer(self, viewer_id: str) -> RTCPeerConnection:
         await self._close_peer(viewer_id)
+        self._ensure_media_sources(f"create_peer:{viewer_id}")
         pc = RTCPeerConnection()
         self.peers[viewer_id] = pc
         self.peer_senders[viewer_id] = []
 
-        for camera_name in CAMERA_NAMES:
+        for camera_name in self.config.camera_names:
             sender = pc.addTrack(
                 self.relays[camera_name].subscribe(self.source_tracks[camera_name], buffered=False)
             )
@@ -462,7 +540,7 @@ class WebRtcPublisher:
         def on_signaling_state_change() -> None:
             logging.info("Signaling state viewerId=%s state=%s", viewer_id, pc.signalingState)
 
-        logging.info("Created peer connection viewerId=%s cameras=%s", viewer_id, ",".join(CAMERA_NAMES))
+        logging.info("Created peer connection viewerId=%s cameras=%s", viewer_id, ",".join(self.config.camera_names))
         return pc
 
     def _track_metadata(self, viewer_id: str) -> List[JsonDict]:
@@ -547,6 +625,8 @@ class WebRtcPublisher:
             return
         logging.info("Closing peer connection viewerId=%s", viewer_id)
         await pc.close()
+        if not self.peers:
+            self._stop_media_sources(f"last_peer_closed:{viewer_id}")
 
     async def _close_all_peers(self) -> None:
         viewer_ids = list(self.peers.keys())
@@ -586,8 +666,7 @@ class WebRtcPublisher:
 
     async def close(self) -> None:
         await self._close_all_peers()
-        for source_track in self.source_tracks.values():
-            source_track.stop()
+        self._stop_media_sources("publisher_close")
 
 
 async def async_main() -> None:
@@ -596,13 +675,14 @@ async def async_main() -> None:
     logging.info(
         (
             "Pi WebRTC publisher starting deviceId=%s signaling=%s cameraBackend=%s cameraIndexes=front:%s,back:%s "
-            "size=%sx%s fps=%.2f codec=%s statsIntervalSec=%.1f"
+            "activeCameras=%s size=%sx%s fps=%.2f codec=%s statsIntervalSec=%.1f"
         ),
         config.device_id,
         config.signaling_url,
         config.camera_backend,
         config.camera_front_index,
         config.camera_back_index,
+        ",".join(config.camera_names),
         config.camera_width,
         config.camera_height,
         config.camera_fps,

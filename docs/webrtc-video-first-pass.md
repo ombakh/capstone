@@ -11,7 +11,7 @@ Browser
   web/app.js
   - /ws?role=ui                         existing controls, telemetry, LiDAR
   - /webrtc?role=viewer&deviceId=pi-01  WebRTC signaling only
-  - RTCPeerConnection                   receives front and back live video tracks
+  - RTCPeerConnection                   receives the configured live video track(s)
 
 PC backend
   backend/src/server.js
@@ -27,7 +27,7 @@ Raspberry Pi
   pi/webrtc_publisher.py
   - connects to /webrtc as role=pi
   - creates one RTCPeerConnection per browser viewer
-  - publishes front and back latest-frame-only camera tracks from pi/webrtc_camera.py
+  - publishes configured latest-frame-only camera tracks from pi/webrtc_camera.py
 ```
 
 The first negotiation flow is:
@@ -35,7 +35,7 @@ The first negotiation flow is:
 1. Browser opens `/webrtc?role=viewer&deviceId=pi-01`.
 2. Pi publisher opens `/webrtc?role=pi&deviceId=pi-01`.
 3. Browser sends `viewer:ready`.
-4. Pi creates an offer with two video tracks and sends `webrtc:offer`.
+4. Pi creates an offer with the configured video tracks and sends `webrtc:offer`.
 5. Browser creates an answer and sends `webrtc:answer`.
 6. Browser and Pi log SDP, ICE candidates, ICE state, signaling state, peer
    connection state, capture timing, outbound stats, and browser receive/render
@@ -124,10 +124,14 @@ make pi-connect-webrtc-esc PC_IP=<pc-ip-or-tailscale-ip>
 Those targets start two Pi processes:
 
 - `pi/gateway.py` for the existing controls and telemetry path
-- `pi/webrtc_publisher.py` for the two-camera WebRTC video path
+- `pi/webrtc_publisher.py` for the WebRTC video path
 
 They also set `PI_CAMERA_JPEG_ENABLED=0` so the old JPEG frame sender does not
 open the camera at the same time as the WebRTC publisher.
+
+The default WebRTC publisher starts with the front camera only. Enable the
+second track with `WEBRTC_CAMERA_NAMES=front,back` after the one-camera path is
+stable on the Pi.
 
 LiDAR still runs through `pi/gateway.py`. The Makefile no longer forces a LiDAR
 serial port by default; pass `PI_LIDAR_PORT=/dev/ttyUSB1` only when the gateway
@@ -152,6 +156,7 @@ http://<pc-ip>:8080?backendHost=<pc-ip>&deviceId=pi-01
 ```bash
 WEBRTC_CAMERA_FRONT_INDEX=0
 WEBRTC_CAMERA_BACK_INDEX=1
+WEBRTC_CAMERA_NAMES=front       # use front,back to publish both tracks
 WEBRTC_CAMERA_BACKEND=auto     # auto | rpicam | opencv
 WEBRTC_CAMERA_WIDTH=640
 WEBRTC_CAMERA_HEIGHT=480
@@ -248,7 +253,8 @@ More stability:
 
 ## Current Limits
 
-- Two cameras: front camera index `0` and back camera index `1` by default.
+- Front camera only by default; set `WEBRTC_CAMERA_NAMES=front,back` to publish
+  both camera tracks.
 - Robot controls still use the existing backend `/ws` path.
 - The backend does not forward video media. It only forwards signaling.
 - Backend-managed camera recording still depends on the old JPEG frame path and

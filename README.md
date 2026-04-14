@@ -301,10 +301,10 @@ python3 pi/gateway.py
 - `make pi-run-esc`: run the Pi gateway with direct ESC control from Pi GPIO
 - `make pi-connect-echo PC_IP=<ip>`: connect the Pi echo gateway to the PC backend
 - `make pi-connect-esc PC_IP=<ip>`: connect the Pi ESC gateway to the PC backend
-- `make pi-connect-webrtc-echo PC_IP=<ip>`: connect echo controls and publish front/back WebRTC video
-- `make pi-connect-webrtc-esc PC_IP=<ip>`: connect ESC controls and publish front/back WebRTC video
+- `make pi-connect-webrtc-echo PC_IP=<ip>`: connect echo controls and publish WebRTC video
+- `make pi-connect-webrtc-esc PC_IP=<ip>`: connect ESC controls and publish WebRTC video
 - `CAMERA_STREAM_HZ`, `CAMERA_FRAME_WIDTH`, `CAMERA_FRAME_HEIGHT`, `CAMERA_JPEG_QUALITY`: tune Pi camera streaming
-- `WEBRTC_CAMERA_FRONT_INDEX`, `WEBRTC_CAMERA_BACK_INDEX`, `WEBRTC_CAMERA_WIDTH`, `WEBRTC_CAMERA_HEIGHT`, `WEBRTC_CAMERA_FPS`: tune WebRTC camera streaming
+- `WEBRTC_CAMERA_NAMES=front,back`, `WEBRTC_CAMERA_FRONT_INDEX`, `WEBRTC_CAMERA_BACK_INDEX`, `WEBRTC_CAMERA_WIDTH`, `WEBRTC_CAMERA_HEIGHT`, `WEBRTC_CAMERA_FPS`: tune WebRTC camera streaming
 - `PI_LIDAR_PORT=/dev/ttyUSB1`: override the LiDAR serial port when the gateway default is wrong
 - `PI_MOTOR_DRIVER=esc`, `ESC_LEFT_GPIO`, `ESC_RIGHT_GPIO`, `ESC_MAX_SPEED`, `ESC_WATCHDOG_TIMEOUT_MS`: tune Pi ESC control
 - `make pi-keys`: send direct arrow-key serial input to an attached ESP32
