@@ -1632,6 +1632,28 @@ function requestWebRtcOffer(reason = "request") {
   }, WEBRTC_OFFER_REQUEST_TIMEOUT_MS);
 }
 
+function sendWebRtcProfileUpdate(reason) {
+  if (!webrtc.enabled) return;
+
+  const nextProfileKey = getWebRtcProfileKey();
+  if (webrtc.profileKey === nextProfileKey) return;
+
+  const payload = {
+    type: "viewer:profile",
+    primaryCameraName: getPrimaryCameraName(),
+    viewMode: state.viewMode,
+    cameraProfiles: getWebRtcCameraProfiles()
+  };
+  const sent = sendWebRtcSignal(payload);
+  if (sent) {
+    webrtc.profileKey = nextProfileKey;
+    console.info(`WebRTC profile update sent reason=${reason} profile=${nextProfileKey}`);
+    return;
+  }
+
+  console.info(`WebRTC profile update deferred reason=${reason} profile=${nextProfileKey}`);
+}
+
 function resetWebRtcTrackMetadata() {
   webrtc.trackCameraNamesByMid.clear();
   webrtc.trackCameraNamesByOrder = [];
@@ -2674,6 +2696,7 @@ function setViewMode(mode) {
   }
 
   syncLidarCanvasSize();
+  sendWebRtcProfileUpdate(`view-mode:${nextMode}`);
 }
 
 function toggleViewMode() {
@@ -2687,6 +2710,7 @@ function swapPrimaryCamera() {
   state.primaryCameraName = secondaryCameraName;
   renderCameraFeeds();
   renderMotorStatus();
+  sendWebRtcProfileUpdate(`primary-camera:${secondaryCameraName}`);
 
   if (driveState.activeKey && canDriveRobot()) {
     sendActiveDriveCommand();

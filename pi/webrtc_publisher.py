@@ -13,13 +13,13 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
+from aiortc import RTCIceCandidate, RTCPeerConnection, RTCRtpSender, RTCSessionDescription, VideoStreamTrack
 from aiortc.contrib.media import MediaRelay
 
 from webrtc_camera import CameraTrackConfig, create_camera_track
@@ -332,6 +332,55 @@ def describe_codec(codec: Any) -> str:
     return f"{mime_type}/{clock_rate or '-'}{parameter_suffix}"
 
 
+class ProfiledVideoTrack(VideoStreamTrack):
+    kind = "video"
+
+    def __init__(
+        self,
+        camera_name: str,
+        source_track: VideoStreamTrack,
+        get_profile: Callable[[str], CameraProfile],
+    ) -> None:
+        super().__init__()
+        self.camera_name = camera_name
+        self.source_track = source_track
+        self.get_profile = get_profile
+        self._last_frame_at: Optional[float] = None
+        self._last_profile: Optional[CameraProfile] = None
+
+    async def recv(self) -> Any:
+        profile = self.get_profile(self.camera_name)
+        interval_sec = 1.0 / clamp_float(profile.fps, 1.0, 60.0)
+        if self._last_frame_at is not None:
+            sleep_sec = max(0.0, (self._last_frame_at + interval_sec) - asyncio.get_running_loop().time())
+            if sleep_sec:
+                await asyncio.sleep(sleep_sec)
+
+        frame = await self.source_track.recv()
+        self._last_frame_at = asyncio.get_running_loop().time()
+
+        profile = self.get_profile(self.camera_name)
+        if profile != self._last_profile:
+            logging.info(
+                "WebRTC output profile camera=%s profile=%s",
+                self.camera_name,
+                describe_camera_profile(profile),
+            )
+            self._last_profile = profile
+
+        if frame.width == profile.width and frame.height == profile.height:
+            return frame
+
+        output_frame = frame.reformat(width=profile.width, height=profile.height)
+        output_frame.pts = frame.pts
+        output_frame.time_base = frame.time_base
+        return output_frame
+
+    def stop(self) -> None:
+        self.source_track.stop()
+        super().stop()
+
+
 class WebRtcPublisher:
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -380,15 +429,14 @@ class WebRtcPublisher:
         self._stop_media_sources(f"reset:{reason}")
         self.relays = {camera_name: MediaRelay() for camera_name in self.config.camera_names}
         self.source_tracks = {
-            camera_name: create_camera_track(
-                self.config.camera_track_config(camera_name, self.camera_profiles.get(camera_name))
-            )
+            camera_name: create_camera_track(self.config.camera_track_config(camera_name))
             for camera_name in self.config.camera_names
         }
         logging.info(
-            "WebRTC media sources ready reason=%s cameras=%s profiles=%s",
+            "WebRTC media sources ready reason=%s cameras=%s sourceProfiles=%s outputProfiles=%s",
             reason,
             ",".join(self.config.camera_names),
+            describe_camera_profiles(self.config.default_camera_profiles()),
             describe_camera_profiles(self.camera_profiles),
         )
 
@@ -440,12 +488,14 @@ class WebRtcPublisher:
 
         self.camera_profiles = next_profiles
         logging.info(
-            "WebRTC camera profiles updated reason=%s profiles=%s",
+            "WebRTC output profiles updated reason=%s profiles=%s",
             reason,
             describe_camera_profiles(self.camera_profiles),
         )
-        self._stop_media_sources(f"profile_changed:{reason}")
         return True
+
+    def _camera_profile(self, camera_name: str) -> CameraProfile:
+        return self.camera_profiles.get(camera_name) or self.config.default_camera_profile(camera_name)
 
     async def _run_session(self) -> None:
         logging.info("Connecting to WebRTC signaling: %s", self.config.signaling_url)
@@ -654,8 +704,13 @@ class WebRtcPublisher:
         self.pending_remote_ice[viewer_id] = []
 
         for camera_name in self.config.camera_names:
+            source_track = self.relays[camera_name].subscribe(self.source_tracks[camera_name], buffered=False)
             sender = pc.addTrack(
-                self.relays[camera_name].subscribe(self.source_tracks[camera_name], buffered=False)
+                ProfiledVideoTrack(
+                    camera_name=camera_name,
+                    source_track=source_track,
+                    get_profile=self._camera_profile,
+                )
             )
             self.peer_senders[viewer_id].append((camera_name, sender))
             self._prefer_video_codec(pc, sender, viewer_id, camera_name)
@@ -682,7 +737,7 @@ class WebRtcPublisher:
             logging.info("Signaling state viewerId=%s state=%s", viewer_id, pc.signalingState)
 
         logging.info(
-            "Created peer connection viewerId=%s cameras=%s profiles=%s",
+            "Created peer connection viewerId=%s cameras=%s outputProfiles=%s",
             viewer_id,
             ",".join(self.config.camera_names),
             describe_camera_profiles(self.camera_profiles),
@@ -814,15 +869,11 @@ class WebRtcPublisher:
         if message_type == "viewer:ready" and viewer_id:
             logging.info("WebRTC viewer ready viewerId=%s", viewer_id)
             pc = self.peers.get(viewer_id)
-            profile_changed = self._apply_camera_profiles(
+            self._apply_camera_profiles(
                 self._parse_requested_camera_profiles(message),
                 reason=f"viewer_ready:{viewer_id}",
             )
             if pc is not None and pc.signalingState != "closed" and pc.connectionState != "failed":
-                if profile_changed:
-                    logging.info("Restarting WebRTC peer for profile change viewerId=%s", viewer_id)
-                    await self._start_offer(viewer_id)
-                    return
                 logging.info(
                     "Ignoring duplicate WebRTC viewer ready viewerId=%s signalingState=%s iceState=%s connectionState=%s",
                     viewer_id,
@@ -832,6 +883,14 @@ class WebRtcPublisher:
                 )
                 return
             await self._start_offer(viewer_id)
+            return
+
+        if message_type == "viewer:profile" and viewer_id:
+            logging.info("WebRTC viewer profile update viewerId=%s", viewer_id)
+            self._apply_camera_profiles(
+                self._parse_requested_camera_profiles(message),
+                reason=f"viewer_profile:{viewer_id}",
+            )
             return
 
         if message_type == "webrtc:answer" and viewer_id:
@@ -860,7 +919,7 @@ async def async_main() -> None:
     logging.info(
         (
             "Pi WebRTC publisher starting deviceId=%s signaling=%s cameraBackend=%s cameraIndexes=front:%s,back:%s "
-            "activeCameras=%s profiles=%s codec=%s statsIntervalSec=%.1f"
+            "activeCameras=%s sourceProfiles=%s codec=%s statsIntervalSec=%.1f"
         ),
         config.device_id,
         config.signaling_url,

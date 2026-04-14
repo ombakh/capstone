@@ -962,7 +962,7 @@ function handleWebRtcPiMessage(deviceId, message) {
 function handleWebRtcViewerMessage(viewerId, message) {
   if (!isObject(message)) return;
 
-  if (["viewer:ready", "webrtc:answer", "webrtc:ice"].includes(message.type)) {
+  if (["viewer:ready", "viewer:profile", "webrtc:answer", "webrtc:ice"].includes(message.type)) {
     forwardWebRtcToPi(viewerId, message);
   }
 }

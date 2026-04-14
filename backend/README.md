@@ -155,7 +155,7 @@ WebRTC signaling path: `/webrtc`
 
 - Pi publisher connect: `/webrtc?role=pi&deviceId=pi-01&token=<PI_DEVICE_TOKEN>`
 - Browser viewer connect: `/webrtc?role=viewer&deviceId=pi-01`
-- Signaling messages: `viewer:ready`, `webrtc:offer`, `webrtc:answer`, `webrtc:ice`
+- Signaling messages: `viewer:ready`, `viewer:profile`, `webrtc:offer`, `webrtc:answer`, `webrtc:ice`
 - The backend relays only signaling. WebRTC video media flows peer-to-peer.
 
 See [WebRTC Video First Pass](../docs/webrtc-video-first-pass.md) for the run flow.

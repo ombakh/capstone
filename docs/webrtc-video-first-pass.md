@@ -34,7 +34,7 @@ The first negotiation flow is:
 
 1. Browser opens `/webrtc?role=viewer&deviceId=pi-01`.
 2. Pi publisher opens `/webrtc?role=pi&deviceId=pi-01`.
-3. Browser sends `viewer:ready`.
+3. Browser sends `viewer:ready` with the requested output profiles.
 4. Pi creates an offer with the configured video tracks and sends `webrtc:offer`.
 5. Browser creates an answer and sends `webrtc:answer`.
 6. Browser and Pi log SDP, ICE candidates, ICE state, signaling state, peer
@@ -173,12 +173,17 @@ WEBRTC_STATS_INTERVAL_SEC=2
 WEBRTC_LOG_SDP=1
 ```
 
-When both WebRTC cameras are enabled, the browser sends per-camera profile
-requests during negotiation. In camera view, the primary camera requests
-`640x480@20fps` and the secondary camera requests `512x384@12fps`. The browser
-does not renegotiate during the camera flip button because restarting the Pi
-camera sources in the middle of a drive can stall both feeds. The current view
-state is used on the next WebRTC negotiation or reconnect.
+When both WebRTC cameras are enabled, the browser sends per-camera output profile
+requests. In camera view, the primary camera requests `640x480@20fps` and the
+secondary camera requests `512x384@12fps`. The profile swaps when the camera
+flip button is clicked by sending `viewer:profile`; the Pi keeps the WebRTC peer
+and camera capture sources alive, then downscales or frame-skips only the lower
+priority output track. In LiDAR view, both outputs request `512x384@12fps`.
+
+The capture source profile is still set by the Pi environment. To get true
+`640x480` detail after a flip, the capture source for that camera must also be
+running at `640x480` or higher; otherwise the output can only upscale the lower
+resolution source.
 
 For a sharper but still conservative profile, try:
 
