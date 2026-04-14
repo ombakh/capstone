@@ -143,16 +143,16 @@ Default drive mapping:
 If your drivetrain is mirrored mechanically, use `ESC_LEFT_INVERTED=1` or
 `ESC_RIGHT_INVERTED=1`.
 
-If you are using forward-only airplane ESCs instead of bidirectional car ESCs,
-set at least:
+Forward-only ESCs are the default. If you are using bidirectional car ESCs
+instead, set at least:
 
 ```bash
 PI_MOTOR_DRIVER=esc \
-ESC_BIDIRECTIONAL=0 \
-ESC_ARM_PULSE_US=1000 \
-ESC_NEUTRAL_PULSE_US=1000 \
-ESC_FORWARD_MIN_PULSE_US=1100 \
-ESC_FORWARD_MAX_PULSE_US=2000 \
+ESC_BIDIRECTIONAL=1 \
+ESC_ARM_PULSE_US=1500 \
+ESC_NEUTRAL_PULSE_US=1500 \
+ESC_FORWARD_MIN_PULSE_US=1560 \
+ESC_FORWARD_MAX_PULSE_US=1900 \
 python3 pi/gateway.py
 ```
 
@@ -190,11 +190,11 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `ESC_RIGHT_GPIO` default: `19`
 - `ESC_GPIOCHIP` default: `-1` (auto-try `gpiochip0`, then `gpiochip4`)
 - `ESC_LEFT_INVERTED` / `ESC_RIGHT_INVERTED` default: `0`
-- `ESC_BIDIRECTIONAL` default: `1`
-- `ESC_ARM_PULSE_US` default: `1500`
-- `ESC_NEUTRAL_PULSE_US` default: `1500`
-- `ESC_FORWARD_MIN_PULSE_US` default: `1560`
-- `ESC_FORWARD_MAX_PULSE_US` default: `1900`
+- `ESC_BIDIRECTIONAL` default: `0`
+- `ESC_ARM_PULSE_US` default: `1000`
+- `ESC_NEUTRAL_PULSE_US` default: `1000`
+- `ESC_FORWARD_MIN_PULSE_US` default: `1100`
+- `ESC_FORWARD_MAX_PULSE_US` default: `2000`
 - `ESC_REVERSE_MIN_PULSE_US` default: `1440`
 - `ESC_REVERSE_MAX_PULSE_US` default: `1100`
 - `ESC_ARM_DELAY_SEC` default: `3.0`

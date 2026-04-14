@@ -180,10 +180,10 @@ robot directions: `forward`, `reverse`, `left`, and `right`.
 
 Default pulse behavior:
 
-- Neutral pulse: `1500 us`
-- Arm pulse: `1500 us`
-- Forward pulse range: `1560 us` to `1900 us`
-- Reverse pulse range: `1440 us` to `1100 us`
+- Neutral pulse: `1000 us`
+- Arm pulse: `1000 us`
+- Forward pulse range: `1100 us` to `2000 us`
+- Reverse pulse range: disabled by default
 - Arm delay: `3.0 s`
 - Watchdog timeout: `650 ms`
 - Max speed clamp: `0.35`
@@ -212,11 +212,11 @@ These are the drive-related variables used by the Pi gateway:
 | `ESC_GPIOCHIP` | `-1` | Auto-try `gpiochip0`, then `gpiochip4`; set explicitly if needed |
 | `ESC_LEFT_INVERTED` | `0` | Invert left side direction if needed |
 | `ESC_RIGHT_INVERTED` | `0` | Invert right side direction if needed |
-| `ESC_BIDIRECTIONAL` | `1` | Enable reverse pulses |
-| `ESC_ARM_PULSE_US` | `1500` | Pulse held during arming |
-| `ESC_NEUTRAL_PULSE_US` | `1500` | Neutral pulse |
-| `ESC_FORWARD_MIN_PULSE_US` | `1560` | Minimum forward pulse |
-| `ESC_FORWARD_MAX_PULSE_US` | `1900` | Maximum forward pulse |
+| `ESC_BIDIRECTIONAL` | `0` | Enable reverse pulses |
+| `ESC_ARM_PULSE_US` | `1000` | Pulse held during arming |
+| `ESC_NEUTRAL_PULSE_US` | `1000` | Neutral pulse |
+| `ESC_FORWARD_MIN_PULSE_US` | `1100` | Minimum forward pulse |
+| `ESC_FORWARD_MAX_PULSE_US` | `2000` | Maximum forward pulse |
 | `ESC_REVERSE_MIN_PULSE_US` | `1440` | Minimum reverse pulse |
 | `ESC_REVERSE_MAX_PULSE_US` | `1100` | Maximum reverse pulse |
 | `ESC_ARM_DELAY_SEC` | `3.0` | Time spent arming before drive is allowed |
@@ -225,22 +225,22 @@ These are the drive-related variables used by the Pi gateway:
 | `ESC_RAMP_STEP_US` | `18` | Pulse ramping step |
 | `ESC_UPDATE_HZ` | `50` | Pulse update loop rate |
 
-## Forward-Only ESCs
+## Bidirectional ESCs
 
-If your ESCs are forward-only airplane ESCs instead of bidirectional car ESCs,
-start with this configuration:
+If your ESCs are bidirectional car ESCs instead of forward-only ESCs, start with
+this configuration:
 
 ```bash
 PI_MOTOR_DRIVER=esc \
-ESC_BIDIRECTIONAL=0 \
-ESC_ARM_PULSE_US=1000 \
-ESC_NEUTRAL_PULSE_US=1000 \
-ESC_FORWARD_MIN_PULSE_US=1100 \
-ESC_FORWARD_MAX_PULSE_US=2000 \
+ESC_BIDIRECTIONAL=1 \
+ESC_ARM_PULSE_US=1500 \
+ESC_NEUTRAL_PULSE_US=1500 \
+ESC_FORWARD_MIN_PULSE_US=1560 \
+ESC_FORWARD_MAX_PULSE_US=1900 \
 python3 pi/gateway.py
 ```
 
-With forward-only ESCs:
+With the default forward-only mode:
 
 - `Down` cannot command reverse
 - `Left` and `Right` become pivots instead of full spins

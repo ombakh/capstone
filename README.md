@@ -254,21 +254,20 @@ rewiring motor phases at the Pi side.
 
 Default pulse behavior:
 
-- Bidirectional ESCs: neutral `1500 us`, forward above neutral, reverse below neutral
+- Forward-only ESCs: low throttle / neutral `1000 us`, forward above neutral
 - The Pi arms by holding `ESC_ARM_PULSE_US` for `ESC_ARM_DELAY_SEC`
 - The gateway clamps requested speed to `ESC_MAX_SPEED`
 - If command refresh stops for `ESC_WATCHDOG_TIMEOUT_MS`, both ESCs return to neutral
 
-If you are using forward-only airplane ESCs instead of bidirectional car ESCs,
-set at least:
+If you are using bidirectional car ESCs instead, set at least:
 
 ```bash
 PI_MOTOR_DRIVER=esc \
-ESC_BIDIRECTIONAL=0 \
-ESC_ARM_PULSE_US=1000 \
-ESC_NEUTRAL_PULSE_US=1000 \
-ESC_FORWARD_MIN_PULSE_US=1100 \
-ESC_FORWARD_MAX_PULSE_US=2000 \
+ESC_BIDIRECTIONAL=1 \
+ESC_ARM_PULSE_US=1500 \
+ESC_NEUTRAL_PULSE_US=1500 \
+ESC_FORWARD_MIN_PULSE_US=1560 \
+ESC_FORWARD_MAX_PULSE_US=1900 \
 python3 pi/gateway.py
 ```
 
