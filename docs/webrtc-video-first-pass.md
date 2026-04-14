@@ -175,9 +175,10 @@ WEBRTC_LOG_SDP=1
 
 When both WebRTC cameras are enabled, the browser sends per-camera profile
 requests during negotiation. In camera view, the primary camera requests
-`640x480@20fps` and the secondary camera requests `512x384@12fps`. The profile
-swaps when the camera flip button is clicked. In LiDAR view, both cameras
-request `512x384@12fps` because the video feeds are smaller.
+`640x480@20fps` and the secondary camera requests `512x384@12fps`. The browser
+does not renegotiate during the camera flip button because restarting the Pi
+camera sources in the middle of a drive can stall both feeds. The current view
+state is used on the next WebRTC negotiation or reconnect.
 
 For a sharper but still conservative profile, try:
 
