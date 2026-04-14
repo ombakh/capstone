@@ -200,8 +200,10 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `ESC_ARM_DELAY_SEC` default: `3.0`
 - `ESC_WATCHDOG_TIMEOUT_MS` default: `1500`
 - `ESC_MAX_SPEED` default: `0.35`
-- `ESC_RAMP_STEP_US` default: `18`
+- `ESC_RAMP_STEP_US` default: `8`
 - `ESC_UPDATE_HZ` default: `50`
+- `ESC_SERVO_FREQUENCY_HZ` default: `50`
+- `ESC_PULSE_REFRESH_MS` default: `250`
 - `CAMERA_FRONT_INDEX` default: `0`
 - `CAMERA_BACK_INDEX` default: `1`
 - `CAMERA_LEFT_INDEX` / `CAMERA_RIGHT_INDEX`: legacy fallback env vars still accepted

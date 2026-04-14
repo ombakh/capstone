@@ -132,6 +132,8 @@ class Config:
     esc_max_speed: float
     esc_ramp_step_us: int
     esc_update_hz: float
+    esc_servo_frequency_hz: int
+    esc_pulse_refresh_ms: int
     camera_front_index: int
     camera_back_index: int
     heartbeat_interval_sec: float
@@ -189,8 +191,10 @@ class Config:
             esc_arm_delay_sec=env_float("ESC_ARM_DELAY_SEC", 3.0),
             esc_watchdog_timeout_ms=env_int("ESC_WATCHDOG_TIMEOUT_MS", 1500),
             esc_max_speed=env_float("ESC_MAX_SPEED", 0.35),
-            esc_ramp_step_us=env_int("ESC_RAMP_STEP_US", 18),
+            esc_ramp_step_us=env_int("ESC_RAMP_STEP_US", 8),
             esc_update_hz=env_float("ESC_UPDATE_HZ", 50.0),
+            esc_servo_frequency_hz=env_int("ESC_SERVO_FREQUENCY_HZ", 50),
+            esc_pulse_refresh_ms=env_int("ESC_PULSE_REFRESH_MS", 250),
             camera_front_index=env_int_any(("CAMERA_FRONT_INDEX", "CAMERA_LEFT_INDEX"), 0),
             camera_back_index=env_int_any(("CAMERA_BACK_INDEX", "CAMERA_RIGHT_INDEX"), 1),
             heartbeat_interval_sec=env_float("PI_HEARTBEAT_SEC", 5.0),
@@ -351,6 +355,7 @@ class LgpioServoConnection:
         left_gpio: int,
         right_gpio: int,
         neutral_pulse_us: int,
+        servo_frequency_hz: int,
     ) -> "LgpioServoConnection":
         if lgpio is None:
             raise RuntimeError("python package 'lgpio' is not installed")
@@ -364,7 +369,7 @@ class LgpioServoConnection:
                 if right_gpio != left_gpio:
                     lgpio.gpio_claim_output(handle, right_gpio)
 
-                connection = LgpioServoConnection(handle, chip)
+                connection = LgpioServoConnection(handle, chip, servo_frequency_hz)
                 connection.set_servo_pulsewidth(left_gpio, neutral_pulse_us)
                 connection.set_servo_pulsewidth(right_gpio, neutral_pulse_us)
                 return connection
@@ -412,9 +417,12 @@ class EscMotorController:
         self.max_speed = clamp_speed(config.esc_max_speed, fallback=0.35)
         self.ramp_step_us = clamp_int(config.esc_ramp_step_us, 1, 250)
         self.update_interval_sec = 1.0 / clamp_float(config.esc_update_hz, 10.0, 200.0)
+        self.servo_frequency_hz = clamp_int(config.esc_servo_frequency_hz, 40, 500)
+        self.pulse_refresh_interval_sec = clamp_int(config.esc_pulse_refresh_ms, 50, 1000) / 1000.0
 
         self._pi: Optional[Any] = None
         self._last_connect_attempt = 0.0
+        self._last_pulse_refresh_at = 0.0
         self._connected = False
         self._armed = False
         self._arming_until: Optional[float] = None
@@ -476,6 +484,7 @@ class EscMotorController:
                 self.left_gpio,
                 self.right_gpio,
                 self.neutral_pulse_us,
+                self.servo_frequency_hz,
             )
         except Exception as exc:
             self._set_error(f"unable to initialize ESC GPIO outputs with lgpio: {exc}")
@@ -523,6 +532,10 @@ class EscMotorController:
                 "reverseMin": self.reverse_min_pulse_us,
                 "reverseMax": self.reverse_max_pulse_us,
             },
+            "signal": {
+                "servoFrequencyHz": self.servo_frequency_hz,
+                "pulseRefreshMs": round(self.pulse_refresh_interval_sec * 1000),
+            },
             "lastError": self._last_error or None,
         }
 
@@ -539,6 +552,7 @@ class EscMotorController:
 
         self._current_left_pulse_us = left_pulse_us
         self._current_right_pulse_us = right_pulse_us
+        self._last_pulse_refresh_at = time.monotonic()
         return True
 
     def _set_target_pulses(self, left_pulse_us: int, right_pulse_us: int) -> None:
@@ -706,6 +720,8 @@ class EscMotorController:
             self.ramp_step_us,
         )
         if next_left == self._current_left_pulse_us and next_right == self._current_right_pulse_us:
+            if now - self._last_pulse_refresh_at >= self.pulse_refresh_interval_sec:
+                self._apply_pulses(self._current_left_pulse_us, self._current_right_pulse_us)
             return
 
         self._apply_pulses(next_left, next_right)

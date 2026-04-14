@@ -188,6 +188,8 @@ Default pulse behavior:
 - Watchdog timeout: `1500 ms`
 - Max speed clamp: `0.35`
 - Update rate: `50 Hz`
+- Servo signal frequency: `50 Hz`
+- Pulse refresh: `250 ms`
 
 Directional mixing in the Pi controller:
 
@@ -222,8 +224,10 @@ These are the drive-related variables used by the Pi gateway:
 | `ESC_ARM_DELAY_SEC` | `3.0` | Time spent arming before drive is allowed |
 | `ESC_WATCHDOG_TIMEOUT_MS` | `1500` | Failsafe timeout to return to neutral |
 | `ESC_MAX_SPEED` | `0.35` | Max UI-requested speed allowed by the Pi |
-| `ESC_RAMP_STEP_US` | `18` | Pulse ramping step |
+| `ESC_RAMP_STEP_US` | `8` | Pulse ramping step |
 | `ESC_UPDATE_HZ` | `50` | Pulse update loop rate |
+| `ESC_SERVO_FREQUENCY_HZ` | `50` | ESC servo pulse frequency |
+| `ESC_PULSE_REFRESH_MS` | `250` | Re-issue current pulses while holding a drive command |
 
 ## Bidirectional ESCs
 

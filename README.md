@@ -302,7 +302,7 @@ python3 pi/gateway.py
 - `WEBRTC_CAMERA_NAMES=front,back`, `WEBRTC_CAMERA_FRONT_INDEX`, `WEBRTC_CAMERA_BACK_INDEX`, `WEBRTC_CAMERA_WIDTH`, `WEBRTC_CAMERA_HEIGHT`, `WEBRTC_CAMERA_FPS`: tune WebRTC camera streaming
 - `WEBRTC_CAMERA_FRONT_WIDTH`, `WEBRTC_CAMERA_FRONT_HEIGHT`, `WEBRTC_CAMERA_FRONT_FPS`, `WEBRTC_CAMERA_BACK_WIDTH`, `WEBRTC_CAMERA_BACK_HEIGHT`, `WEBRTC_CAMERA_BACK_FPS`: override per-camera WebRTC profiles
 - `PI_LIDAR_PORT=/dev/ttyUSB1`: override the LiDAR serial port when the gateway default is wrong
-- `PI_MOTOR_DRIVER=esc`, `ESC_LEFT_GPIO`, `ESC_RIGHT_GPIO`, `ESC_GPIOCHIP`, `ESC_MAX_SPEED`, `ESC_WATCHDOG_TIMEOUT_MS`: tune Pi ESC control
+- `PI_MOTOR_DRIVER=esc`, `ESC_LEFT_GPIO`, `ESC_RIGHT_GPIO`, `ESC_GPIOCHIP`, `ESC_MAX_SPEED`, `ESC_WATCHDOG_TIMEOUT_MS`, `ESC_SERVO_FREQUENCY_HZ`: tune Pi ESC control
 - `make pi-keys`: send direct arrow-key serial input to an attached ESP32
 - `make help`: list available targets
 
