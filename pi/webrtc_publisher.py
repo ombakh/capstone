@@ -87,6 +87,14 @@ def parse_json_message(raw: Any) -> Optional[JsonDict]:
 
 
 @dataclass(frozen=True)
+class CameraProfile:
+    width: int
+    height: int
+    fps: float
+    jpeg_quality: int
+
+
+@dataclass(frozen=True)
 class Config:
     signaling_ws_base: str
     device_id: str
@@ -100,6 +108,14 @@ class Config:
     camera_height: int
     camera_fps: float
     camera_jpeg_quality: int
+    camera_front_width: int
+    camera_front_height: int
+    camera_front_fps: float
+    camera_front_jpeg_quality: int
+    camera_back_width: int
+    camera_back_height: int
+    camera_back_fps: float
+    camera_back_jpeg_quality: int
     video_codec: str
     stats_interval_sec: float
     camera_names: Tuple[str, ...]
@@ -115,6 +131,10 @@ class Config:
     @staticmethod
     def from_env() -> "Config":
         backend_ws_base = os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:3000")
+        camera_width = env_int("WEBRTC_CAMERA_WIDTH", 640)
+        camera_height = env_int("WEBRTC_CAMERA_HEIGHT", 480)
+        camera_fps = env_float("WEBRTC_CAMERA_FPS", 20.0)
+        camera_jpeg_quality = env_int("WEBRTC_CAMERA_JPEG_QUALITY", env_int("CAMERA_JPEG_QUALITY", 70))
         return Config(
             signaling_ws_base=os.getenv("WEBRTC_SIGNALING_WS_BASE", backend_ws_base),
             device_id=os.getenv("PI_DEVICE_ID", "pi-01"),
@@ -130,16 +150,44 @@ class Config:
                 ("WEBRTC_CAMERA_BACK_INDEX", "WEBRTC_CAMERA_RIGHT_INDEX", "CAMERA_BACK_INDEX", "CAMERA_RIGHT_INDEX"),
                 1,
             ),
-            camera_width=env_int("WEBRTC_CAMERA_WIDTH", 640),
-            camera_height=env_int("WEBRTC_CAMERA_HEIGHT", 480),
-            camera_fps=env_float("WEBRTC_CAMERA_FPS", 20.0),
-            camera_jpeg_quality=env_int("WEBRTC_CAMERA_JPEG_QUALITY", env_int("CAMERA_JPEG_QUALITY", 70)),
+            camera_width=camera_width,
+            camera_height=camera_height,
+            camera_fps=camera_fps,
+            camera_jpeg_quality=camera_jpeg_quality,
+            camera_front_width=env_int("WEBRTC_CAMERA_FRONT_WIDTH", camera_width),
+            camera_front_height=env_int("WEBRTC_CAMERA_FRONT_HEIGHT", camera_height),
+            camera_front_fps=env_float("WEBRTC_CAMERA_FRONT_FPS", camera_fps),
+            camera_front_jpeg_quality=env_int("WEBRTC_CAMERA_FRONT_JPEG_QUALITY", camera_jpeg_quality),
+            camera_back_width=env_int("WEBRTC_CAMERA_BACK_WIDTH", camera_width),
+            camera_back_height=env_int("WEBRTC_CAMERA_BACK_HEIGHT", camera_height),
+            camera_back_fps=env_float("WEBRTC_CAMERA_BACK_FPS", camera_fps),
+            camera_back_jpeg_quality=env_int("WEBRTC_CAMERA_BACK_JPEG_QUALITY", camera_jpeg_quality),
             video_codec=os.getenv("WEBRTC_VIDEO_CODEC", "H264"),
             stats_interval_sec=env_float("WEBRTC_STATS_INTERVAL_SEC", 2.0),
             camera_names=env_camera_names(),
         )
 
-    def camera_track_config(self, camera_name: str) -> CameraTrackConfig:
+    def default_camera_profile(self, camera_name: str) -> CameraProfile:
+        if camera_name == "front":
+            return CameraProfile(
+                width=self.camera_front_width,
+                height=self.camera_front_height,
+                fps=self.camera_front_fps,
+                jpeg_quality=self.camera_front_jpeg_quality,
+            )
+        if camera_name == "back":
+            return CameraProfile(
+                width=self.camera_back_width,
+                height=self.camera_back_height,
+                fps=self.camera_back_fps,
+                jpeg_quality=self.camera_back_jpeg_quality,
+            )
+        raise ValueError(f"unknown camera name: {camera_name}")
+
+    def default_camera_profiles(self) -> Dict[str, CameraProfile]:
+        return {camera_name: self.default_camera_profile(camera_name) for camera_name in self.camera_names}
+
+    def camera_track_config(self, camera_name: str, profile: Optional[CameraProfile] = None) -> CameraTrackConfig:
         if camera_name == "front":
             camera_index = self.camera_front_index
         elif camera_name == "back":
@@ -147,15 +195,64 @@ class Config:
         else:
             raise ValueError(f"unknown camera name: {camera_name}")
 
+        resolved_profile = profile or self.default_camera_profile(camera_name)
         return CameraTrackConfig(
             backend=self.camera_backend,
             camera_index=camera_index,
-            width=self.camera_width,
-            height=self.camera_height,
-            fps=self.camera_fps,
-            jpeg_quality=self.camera_jpeg_quality,
+            width=resolved_profile.width,
+            height=resolved_profile.height,
+            fps=resolved_profile.fps,
+            jpeg_quality=resolved_profile.jpeg_quality,
             stats_interval_sec=self.stats_interval_sec,
         )
+
+
+def clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
+
+
+def clamp_float(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def int_from_payload(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def float_from_payload(value: Any, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def camera_profile_from_payload(value: Any, fallback: CameraProfile) -> CameraProfile:
+    if not isinstance(value, dict):
+        return fallback
+
+    return CameraProfile(
+        width=clamp_int(int_from_payload(value.get("width"), fallback.width), 160, 1920),
+        height=clamp_int(int_from_payload(value.get("height"), fallback.height), 120, 1080),
+        fps=clamp_float(float_from_payload(value.get("fps"), fallback.fps), 1.0, 60.0),
+        jpeg_quality=clamp_int(
+            int_from_payload(value.get("jpegQuality", value.get("jpeg_quality")), fallback.jpeg_quality),
+            20,
+            95,
+        ),
+    )
+
+
+def describe_camera_profile(profile: CameraProfile) -> str:
+    return f"{profile.width}x{profile.height}@{profile.fps:.1f}fps,q={profile.jpeg_quality}"
+
+
+def describe_camera_profiles(profiles: Dict[str, CameraProfile]) -> str:
+    return ",".join(
+        f"{camera_name}:{describe_camera_profile(profile)}" for camera_name, profile in sorted(profiles.items())
+    )
 
 
 def describe_sdp(description: RTCSessionDescription) -> str:
@@ -240,6 +337,7 @@ class WebRtcPublisher:
         self.config = config
         self.relays: Dict[str, MediaRelay] = {}
         self.source_tracks: Dict[str, Any] = {}
+        self.camera_profiles: Dict[str, CameraProfile] = config.default_camera_profiles()
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.stats_tasks: Dict[str, asyncio.Task[None]] = {}
         self.peer_senders: Dict[str, List[Tuple[str, RTCRtpSender]]] = {}
@@ -282,10 +380,17 @@ class WebRtcPublisher:
         self._stop_media_sources(f"reset:{reason}")
         self.relays = {camera_name: MediaRelay() for camera_name in self.config.camera_names}
         self.source_tracks = {
-            camera_name: create_camera_track(self.config.camera_track_config(camera_name))
+            camera_name: create_camera_track(
+                self.config.camera_track_config(camera_name, self.camera_profiles.get(camera_name))
+            )
             for camera_name in self.config.camera_names
         }
-        logging.info("WebRTC media sources ready reason=%s cameras=%s", reason, ",".join(self.config.camera_names))
+        logging.info(
+            "WebRTC media sources ready reason=%s cameras=%s profiles=%s",
+            reason,
+            ",".join(self.config.camera_names),
+            describe_camera_profiles(self.camera_profiles),
+        )
 
     def _ensure_media_sources(self, reason: str) -> None:
         missing_cameras = [
@@ -307,6 +412,40 @@ class WebRtcPublisher:
                 ",".join(ended_cameras) or "-",
             )
             self._reset_media_sources(reason)
+
+    def _parse_requested_camera_profiles(self, message: JsonDict) -> Dict[str, CameraProfile]:
+        raw_profiles = message.get("cameraProfiles")
+        if not isinstance(raw_profiles, dict):
+            return {}
+
+        requested_profiles: Dict[str, CameraProfile] = {}
+        for camera_name in self.config.camera_names:
+            fallback = self.camera_profiles.get(camera_name) or self.config.default_camera_profile(camera_name)
+            requested_profile = camera_profile_from_payload(raw_profiles.get(camera_name), fallback)
+            requested_profiles[camera_name] = requested_profile
+
+        return requested_profiles
+
+    def _apply_camera_profiles(self, profiles: Dict[str, CameraProfile], reason: str) -> bool:
+        if not profiles:
+            return False
+
+        next_profiles = dict(self.camera_profiles)
+        for camera_name in self.config.camera_names:
+            if camera_name in profiles:
+                next_profiles[camera_name] = profiles[camera_name]
+
+        if next_profiles == self.camera_profiles:
+            return False
+
+        self.camera_profiles = next_profiles
+        logging.info(
+            "WebRTC camera profiles updated reason=%s profiles=%s",
+            reason,
+            describe_camera_profiles(self.camera_profiles),
+        )
+        self._stop_media_sources(f"profile_changed:{reason}")
+        return True
 
     async def _run_session(self) -> None:
         logging.info("Connecting to WebRTC signaling: %s", self.config.signaling_url)
@@ -542,7 +681,12 @@ class WebRtcPublisher:
         def on_signaling_state_change() -> None:
             logging.info("Signaling state viewerId=%s state=%s", viewer_id, pc.signalingState)
 
-        logging.info("Created peer connection viewerId=%s cameras=%s", viewer_id, ",".join(self.config.camera_names))
+        logging.info(
+            "Created peer connection viewerId=%s cameras=%s profiles=%s",
+            viewer_id,
+            ",".join(self.config.camera_names),
+            describe_camera_profiles(self.camera_profiles),
+        )
         return pc
 
     def _track_metadata(self, viewer_id: str) -> List[JsonDict]:
@@ -559,6 +703,12 @@ class WebRtcPublisher:
                     "kind": "video",
                     "mid": str(mid) if mid is not None else str(index),
                     "order": index,
+                    "profile": {
+                        "width": self.camera_profiles[camera_name].width,
+                        "height": self.camera_profiles[camera_name].height,
+                        "fps": self.camera_profiles[camera_name].fps,
+                        "jpegQuality": self.camera_profiles[camera_name].jpeg_quality,
+                    },
                 }
             )
 
@@ -664,7 +814,15 @@ class WebRtcPublisher:
         if message_type == "viewer:ready" and viewer_id:
             logging.info("WebRTC viewer ready viewerId=%s", viewer_id)
             pc = self.peers.get(viewer_id)
+            profile_changed = self._apply_camera_profiles(
+                self._parse_requested_camera_profiles(message),
+                reason=f"viewer_ready:{viewer_id}",
+            )
             if pc is not None and pc.signalingState != "closed" and pc.connectionState != "failed":
+                if profile_changed:
+                    logging.info("Restarting WebRTC peer for profile change viewerId=%s", viewer_id)
+                    await self._start_offer(viewer_id)
+                    return
                 logging.info(
                     "Ignoring duplicate WebRTC viewer ready viewerId=%s signalingState=%s iceState=%s connectionState=%s",
                     viewer_id,
@@ -702,7 +860,7 @@ async def async_main() -> None:
     logging.info(
         (
             "Pi WebRTC publisher starting deviceId=%s signaling=%s cameraBackend=%s cameraIndexes=front:%s,back:%s "
-            "activeCameras=%s size=%sx%s fps=%.2f codec=%s statsIntervalSec=%.1f"
+            "activeCameras=%s profiles=%s codec=%s statsIntervalSec=%.1f"
         ),
         config.device_id,
         config.signaling_url,
@@ -710,9 +868,7 @@ async def async_main() -> None:
         config.camera_front_index,
         config.camera_back_index,
         ",".join(config.camera_names),
-        config.camera_width,
-        config.camera_height,
-        config.camera_fps,
+        describe_camera_profiles(config.default_camera_profiles()),
         config.video_codec,
         config.stats_interval_sec,
     )

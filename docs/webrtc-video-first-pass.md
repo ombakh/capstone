@@ -162,10 +162,22 @@ WEBRTC_CAMERA_WIDTH=640
 WEBRTC_CAMERA_HEIGHT=480
 WEBRTC_CAMERA_FPS=20
 WEBRTC_CAMERA_JPEG_QUALITY=70
+WEBRTC_CAMERA_FRONT_WIDTH=640
+WEBRTC_CAMERA_FRONT_HEIGHT=480
+WEBRTC_CAMERA_FRONT_FPS=20
+WEBRTC_CAMERA_BACK_WIDTH=512
+WEBRTC_CAMERA_BACK_HEIGHT=384
+WEBRTC_CAMERA_BACK_FPS=12
 WEBRTC_VIDEO_CODEC=H264        # H264 preferred, VP8 fallback if unavailable
 WEBRTC_STATS_INTERVAL_SEC=2
 WEBRTC_LOG_SDP=1
 ```
+
+When both WebRTC cameras are enabled, the browser sends per-camera profile
+requests during negotiation. In camera view, the primary camera requests
+`640x480@20fps` and the secondary camera requests `512x384@12fps`. The profile
+swaps when the camera flip button is clicked. In LiDAR view, both cameras
+request `512x384@12fps` because the video feeds are smaller.
 
 For a sharper but still conservative profile, try:
 

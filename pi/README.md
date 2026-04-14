@@ -220,6 +220,8 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `WEBRTC_CAMERA_BACKEND` default: `auto`, supported values: `auto`, `rpicam`, `opencv`
 - `WEBRTC_CAMERA_WIDTH` / `WEBRTC_CAMERA_HEIGHT` default to `640` / `480`
 - `WEBRTC_CAMERA_FPS` default: `20`
+- `WEBRTC_CAMERA_FRONT_WIDTH` / `WEBRTC_CAMERA_FRONT_HEIGHT` / `WEBRTC_CAMERA_FRONT_FPS`: override the front WebRTC camera profile
+- `WEBRTC_CAMERA_BACK_WIDTH` / `WEBRTC_CAMERA_BACK_HEIGHT` / `WEBRTC_CAMERA_BACK_FPS`: override the back WebRTC camera profile
 - `WEBRTC_VIDEO_CODEC` default: `H264` (prefers H.264 in WebRTC negotiation)
 - `WEBRTC_STATS_INTERVAL_SEC` default: `2`
 - `WEBRTC_LOG_SDP` default: `1`

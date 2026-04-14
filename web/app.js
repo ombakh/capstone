@@ -59,6 +59,9 @@ const WEBRTC_RECONNECT_DELAY_MS = 1500;
 const WEBRTC_OFFER_REQUEST_TIMEOUT_MS = 5000;
 const WEBRTC_ICE_GATHERING_TIMEOUT_MS = 5000;
 const WEBRTC_STATS_INTERVAL_MS = 2000;
+const WEBRTC_PRIMARY_CAMERA_PROFILE = { width: 640, height: 480, fps: 20, jpegQuality: 70 };
+const WEBRTC_SECONDARY_CAMERA_PROFILE = { width: 512, height: 384, fps: 12, jpegQuality: 60 };
+const WEBRTC_LIDAR_CAMERA_PROFILE = { width: 512, height: 384, fps: 12, jpegQuality: 60 };
 const CAMERA_NAMES = ["front", "back"];
 const CAMERA_STREAM_FPS_MIN = 1;
 const CAMERA_STREAM_FPS_MAX = 12;
@@ -140,6 +143,7 @@ const webrtc = {
   trackCameraNamesByOrder: [],
   trackCameraNamesByTrackId: new Map(),
   remoteTrackCount: 0,
+  profileKey: null,
   reconnectTimer: null,
   offerRequestTimer: null,
   offerRequested: false,
@@ -1569,6 +1573,34 @@ function clearWebRtcOfferRequestTimer() {
   webrtc.offerRequestTimer = null;
 }
 
+function cloneWebRtcCameraProfile(profile) {
+  return { ...profile };
+}
+
+function getWebRtcCameraProfiles() {
+  if (state.viewMode === "lidar") {
+    return {
+      front: cloneWebRtcCameraProfile(WEBRTC_LIDAR_CAMERA_PROFILE),
+      back: cloneWebRtcCameraProfile(WEBRTC_LIDAR_CAMERA_PROFILE)
+    };
+  }
+
+  const primaryCameraName = getPrimaryCameraName();
+  const secondaryCameraName = getSecondaryCameraName();
+  return {
+    [primaryCameraName]: cloneWebRtcCameraProfile(WEBRTC_PRIMARY_CAMERA_PROFILE),
+    [secondaryCameraName]: cloneWebRtcCameraProfile(WEBRTC_SECONDARY_CAMERA_PROFILE)
+  };
+}
+
+function getWebRtcProfileKey() {
+  return JSON.stringify({
+    primaryCameraName: getPrimaryCameraName(),
+    viewMode: state.viewMode,
+    cameraProfiles: getWebRtcCameraProfiles()
+  });
+}
+
 function requestWebRtcOffer(reason = "request") {
   if (webrtc.offerRequested) return;
   if (webrtc.pc) {
@@ -1576,11 +1608,18 @@ function requestWebRtcOffer(reason = "request") {
     return;
   }
 
-  const sent = sendWebRtcSignal({ type: "viewer:ready" });
+  const nextProfileKey = getWebRtcProfileKey();
+  const sent = sendWebRtcSignal({
+    type: "viewer:ready",
+    primaryCameraName: getPrimaryCameraName(),
+    viewMode: state.viewMode,
+    cameraProfiles: getWebRtcCameraProfiles()
+  });
   webrtc.offerRequested = sent;
   if (!sent) return;
 
-  console.info(`WebRTC offer requested reason=${reason}`);
+  webrtc.profileKey = nextProfileKey;
+  console.info(`WebRTC offer requested reason=${reason} profile=${nextProfileKey}`);
   clearWebRtcOfferRequestTimer();
   webrtc.offerRequestTimer = window.setTimeout(() => {
     if (!webrtc.offerRequested || webrtc.pc) return;
@@ -1591,6 +1630,22 @@ function requestWebRtcOffer(reason = "request") {
       requestWebRtcOffer("offer-timeout");
     }
   }, WEBRTC_OFFER_REQUEST_TIMEOUT_MS);
+}
+
+function restartWebRtcForProfileChange(reason) {
+  if (!webrtc.enabled) return;
+
+  const nextProfileKey = getWebRtcProfileKey();
+  if (webrtc.profileKey === nextProfileKey) return;
+
+  console.info(`WebRTC profile changed reason=${reason} profile=${nextProfileKey}`);
+  webrtc.profileKey = nextProfileKey;
+  if (!webrtc.pc && !webrtc.offerRequested) return;
+
+  closeWebRtcPeerConnection(true);
+  if (webrtc.ws?.readyState === WebSocket.OPEN) {
+    requestWebRtcOffer(`profile-change:${reason}`);
+  }
 }
 
 function resetWebRtcTrackMetadata() {
@@ -2635,6 +2690,7 @@ function setViewMode(mode) {
   }
 
   syncLidarCanvasSize();
+  restartWebRtcForProfileChange(`view-mode:${nextMode}`);
 }
 
 function toggleViewMode() {
@@ -2648,6 +2704,7 @@ function swapPrimaryCamera() {
   state.primaryCameraName = secondaryCameraName;
   renderCameraFeeds();
   renderMotorStatus();
+  restartWebRtcForProfileChange(`primary-camera:${secondaryCameraName}`);
 
   if (driveState.activeKey && canDriveRobot()) {
     sendActiveDriveCommand();
