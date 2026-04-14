@@ -657,7 +657,7 @@ class EscMotorController:
         if applied_speed <= 0:
             return self.stop(reason="zero_speed")
 
-        speed_ratio = applied_speed / self.max_speed if self.max_speed > 0 else 0.0
+        speed_ratio = applied_speed
         left_pulse_us = self._pulse_for_signed_speed(
             self._signed_speed_for_side(direction, "left", speed_ratio)
         )
