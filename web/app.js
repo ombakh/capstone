@@ -1571,6 +1571,10 @@ function clearWebRtcOfferRequestTimer() {
 
 function requestWebRtcOffer(reason = "request") {
   if (webrtc.offerRequested) return;
+  if (webrtc.pc) {
+    console.info(`WebRTC offer request skipped reason=${reason} activePeer=true`);
+    return;
+  }
 
   const sent = sendWebRtcSignal({ type: "viewer:ready" });
   webrtc.offerRequested = sent;

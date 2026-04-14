@@ -243,6 +243,7 @@ class WebRtcPublisher:
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.stats_tasks: Dict[str, asyncio.Task[None]] = {}
         self.peer_senders: Dict[str, List[Tuple[str, RTCRtpSender]]] = {}
+        self.pending_remote_ice: Dict[str, List[Optional[RTCIceCandidate]]] = {}
         self.ws: Optional[Any] = None
 
     async def run_forever(self) -> None:
@@ -511,6 +512,7 @@ class WebRtcPublisher:
         pc = RTCPeerConnection()
         self.peers[viewer_id] = pc
         self.peer_senders[viewer_id] = []
+        self.pending_remote_ice[viewer_id] = []
 
         for camera_name in self.config.camera_names:
             sender = pc.addTrack(
@@ -596,6 +598,10 @@ class WebRtcPublisher:
         description = RTCSessionDescription(sdp=str(sdp.get("sdp") or ""), type=str(sdp.get("type") or "answer"))
         self._log_sdp("Remote answer", description, viewer_id)
         await pc.setRemoteDescription(description)
+        pending_candidates = self.pending_remote_ice.pop(viewer_id, [])
+        for candidate in pending_candidates:
+            logging.info("Applying queued remote ICE viewerId=%s", viewer_id)
+            await pc.addIceCandidate(candidate)
 
     async def _handle_remote_ice(self, viewer_id: str, payload: JsonDict) -> None:
         pc = self.peers.get(viewer_id)
@@ -610,6 +616,16 @@ class WebRtcPublisher:
 
         self._log_remote_candidate(viewer_id, candidate_payload)
         candidate = parse_browser_candidate(candidate_payload)
+        if getattr(pc, "remoteDescription", None) is None:
+            pending_candidates = self.pending_remote_ice.setdefault(viewer_id, [])
+            pending_candidates.append(candidate)
+            logging.info(
+                "Queued remote ICE before answer viewerId=%s queued=%s",
+                viewer_id,
+                len(pending_candidates),
+            )
+            return
+
         await pc.addIceCandidate(candidate)
 
     async def _close_peer(self, viewer_id: str) -> None:
@@ -620,6 +636,7 @@ class WebRtcPublisher:
             stats_task.cancel()
 
         self.peer_senders.pop(viewer_id, None)
+        self.pending_remote_ice.pop(viewer_id, None)
         pc = self.peers.pop(viewer_id, None)
         if pc is None:
             return
@@ -646,6 +663,16 @@ class WebRtcPublisher:
 
         if message_type == "viewer:ready" and viewer_id:
             logging.info("WebRTC viewer ready viewerId=%s", viewer_id)
+            pc = self.peers.get(viewer_id)
+            if pc is not None and pc.signalingState != "closed" and pc.connectionState != "failed":
+                logging.info(
+                    "Ignoring duplicate WebRTC viewer ready viewerId=%s signalingState=%s iceState=%s connectionState=%s",
+                    viewer_id,
+                    pc.signalingState,
+                    pc.iceConnectionState,
+                    pc.connectionState,
+                )
+                return
             await self._start_offer(viewer_id)
             return
 
