@@ -216,6 +216,7 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_CAMERA_JPEG_ENABLED` default: `1` (set `0` when `pi/webrtc_publisher.py` owns the camera)
 - `WEBRTC_CAMERA_FRONT_INDEX` default: `WEBRTC_CAMERA_INDEX` / `CAMERA_FRONT_INDEX` / `0`
 - `WEBRTC_CAMERA_BACK_INDEX` default: `CAMERA_BACK_INDEX` / `1`
+- `WEBRTC_CAMERA_NAMES` default: `front` (set `front,back` to publish both WebRTC tracks)
 - `WEBRTC_CAMERA_BACKEND` default: `auto`, supported values: `auto`, `rpicam`, `opencv`
 - `WEBRTC_CAMERA_WIDTH` / `WEBRTC_CAMERA_HEIGHT` default to `640` / `480`
 - `WEBRTC_CAMERA_FPS` default: `20`

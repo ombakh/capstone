@@ -26,7 +26,8 @@ from webrtc_camera import CameraTrackConfig, create_camera_track
 
 
 JsonDict = Dict[str, Any]
-CAMERA_NAMES: Tuple[str, str] = ("front", "back")
+SUPPORTED_CAMERA_NAMES: Tuple[str, str] = ("front", "back")
+DEFAULT_CAMERA_NAMES: Tuple[str, ...] = ("front",)
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -50,6 +51,31 @@ def env_int_any(names: tuple[str, ...], default: int) -> int:
         if raw is not None:
             return int(raw)
     return default
+
+
+def env_camera_names() -> Tuple[str, ...]:
+    raw = os.getenv("WEBRTC_CAMERA_NAMES") or os.getenv("WEBRTC_CAMERAS")
+    if raw is None:
+        if env_flag("WEBRTC_SECOND_CAMERA_ENABLED", default=False):
+            return SUPPORTED_CAMERA_NAMES
+        return DEFAULT_CAMERA_NAMES
+
+    camera_names: List[str] = []
+    for item in raw.split(","):
+        camera_name = item.strip().lower()
+        if camera_name in {"left", "primary"}:
+            camera_name = "front"
+        elif camera_name in {"right", "secondary"}:
+            camera_name = "back"
+
+        if camera_name not in SUPPORTED_CAMERA_NAMES:
+            raise ValueError(f"unsupported WebRTC camera name: {camera_name}")
+        if camera_name not in camera_names:
+            camera_names.append(camera_name)
+
+    if not camera_names:
+        raise ValueError("WEBRTC_CAMERA_NAMES must include at least one camera")
+    return tuple(camera_names)
 
 
 def parse_json_message(raw: Any) -> Optional[JsonDict]:
@@ -76,6 +102,7 @@ class Config:
     camera_jpeg_quality: int
     video_codec: str
     stats_interval_sec: float
+    camera_names: Tuple[str, ...]
 
     @property
     def signaling_url(self) -> str:
@@ -109,6 +136,7 @@ class Config:
             camera_jpeg_quality=env_int("WEBRTC_CAMERA_JPEG_QUALITY", env_int("CAMERA_JPEG_QUALITY", 70)),
             video_codec=os.getenv("WEBRTC_VIDEO_CODEC", "H264"),
             stats_interval_sec=env_float("WEBRTC_STATS_INTERVAL_SEC", 2.0),
+            camera_names=env_camera_names(),
         )
 
     def camera_track_config(self, camera_name: str) -> CameraTrackConfig:
@@ -210,9 +238,10 @@ def describe_codec(codec: Any) -> str:
 class WebRtcPublisher:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.relays = {camera_name: MediaRelay() for camera_name in CAMERA_NAMES}
+        self.relays = {camera_name: MediaRelay() for camera_name in config.camera_names}
         self.source_tracks = {
-            camera_name: create_camera_track(config.camera_track_config(camera_name)) for camera_name in CAMERA_NAMES
+            camera_name: create_camera_track(config.camera_track_config(camera_name))
+            for camera_name in config.camera_names
         }
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.stats_tasks: Dict[str, asyncio.Task[None]] = {}
@@ -439,7 +468,7 @@ class WebRtcPublisher:
         self.peers[viewer_id] = pc
         self.peer_senders[viewer_id] = []
 
-        for camera_name in CAMERA_NAMES:
+        for camera_name in self.config.camera_names:
             sender = pc.addTrack(
                 self.relays[camera_name].subscribe(self.source_tracks[camera_name], buffered=False)
             )
@@ -467,7 +496,7 @@ class WebRtcPublisher:
         def on_signaling_state_change() -> None:
             logging.info("Signaling state viewerId=%s state=%s", viewer_id, pc.signalingState)
 
-        logging.info("Created peer connection viewerId=%s cameras=%s", viewer_id, ",".join(CAMERA_NAMES))
+        logging.info("Created peer connection viewerId=%s cameras=%s", viewer_id, ",".join(self.config.camera_names))
         return pc
 
     def _track_metadata(self, viewer_id: str) -> List[JsonDict]:
@@ -601,13 +630,14 @@ async def async_main() -> None:
     logging.info(
         (
             "Pi WebRTC publisher starting deviceId=%s signaling=%s cameraBackend=%s cameraIndexes=front:%s,back:%s "
-            "size=%sx%s fps=%.2f codec=%s statsIntervalSec=%.1f"
+            "activeCameras=%s size=%sx%s fps=%.2f codec=%s statsIntervalSec=%.1f"
         ),
         config.device_id,
         config.signaling_url,
         config.camera_backend,
         config.camera_front_index,
         config.camera_back_index,
+        ",".join(config.camera_names),
         config.camera_width,
         config.camera_height,
         config.camera_fps,
