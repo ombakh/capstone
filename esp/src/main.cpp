@@ -95,6 +95,7 @@ constexpr float kMaxSpeed = ESC_MAX_SPEED;
 constexpr int kRampStepUs = ESC_RAMP_STEP_US;
 constexpr unsigned long kUpdateIntervalMs = 1000UL / ESC_UPDATE_HZ;
 constexpr unsigned long kStatusPublishIntervalMs = 1000;
+constexpr unsigned long kDirtyStatusPublishIntervalMs = 250;
 constexpr size_t kSerialLineBufferSize = 256;
 
 enum class MotorState {
@@ -556,7 +557,9 @@ void updateOutputs(unsigned long now) {
 }
 
 void maybePublishStatus(unsigned long now) {
-    if (statusDirty || now - lastStatusPublishMs >= kStatusPublishIntervalMs) {
+    const bool periodicStatusDue = now - lastStatusPublishMs >= kStatusPublishIntervalMs;
+    const bool dirtyStatusDue = statusDirty && now - lastStatusPublishMs >= kDirtyStatusPublishIntervalMs;
+    if (dirtyStatusDue || periodicStatusDue) {
         publishMotorStatus();
     }
 }
