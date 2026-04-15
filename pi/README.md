@@ -7,8 +7,8 @@ Responsibilities:
 
 - Connect to backend WebSocket as a Pi device (`role=pi`).
 - Print incoming drive commands in echo mode for no-hardware testing.
-- Optionally drive two ESCs directly from Raspberry Pi GPIO using RC-style pulse widths.
-- Optionally forward drive/motor commands to ESP32 over serial.
+- Forward drive/motor commands to an ESP32 over serial for ESC pulse generation.
+- Keep the legacy direct Raspberry Pi GPIO ESC path available for fallback tests.
 - Publish motor status, camera status, LiDAR status, temperature, and ESP telemetry.
 - Stream live JPEG frames for both configured Pi cameras to the frontend.
 - Stream live LiDAR scans (`lidar.scan`) to backend for web rendering.
@@ -23,7 +23,6 @@ the WebRTC publisher owns the camera. See
 From the repo root on the Pi:
 
 ```bash
-sudo apt-get install -y swig build-essential python3-dev liblgpio-dev
 python3 -m venv .venv
 source .venv/bin/activate
 make pi-setup
@@ -39,8 +38,14 @@ Optional for the OpenCV fallback:
 sudo apt-get install -y python3-opencv
 ```
 
-Direct ESC control uses the native `lgpio` library. Install those system
-packages before `make pi-setup` so the Python package can build.
+The preferred motor path uses `pyserial` to talk to the ESP32.
+
+Optional for the legacy direct Pi GPIO ESC fallback:
+
+```bash
+sudo apt-get install -y swig build-essential python3-dev liblgpio-dev
+python3 -m pip install lgpio
+```
 
 ## Run
 
@@ -56,7 +61,13 @@ For no-hardware testing, run the gateway in terminal echo mode:
 make pi-run-echo
 ```
 
-For direct Raspberry Pi GPIO ESC control:
+For ESP32 serial ESC control:
+
+```bash
+make pi-run-esp
+```
+
+For legacy direct Raspberry Pi GPIO ESC control:
 
 ```bash
 make pi-run-esc
@@ -68,7 +79,13 @@ To connect the Pi to a PC-hosted backend in echo mode:
 make pi-connect-echo PC_IP=<pc-ip>
 ```
 
-To connect in direct ESC mode:
+To connect in ESP32 ESC mode:
+
+```bash
+make pi-connect-esp PC_IP=<pc-ip>
+```
+
+To connect in legacy direct Pi GPIO ESC mode:
 
 ```bash
 make pi-connect-esc PC_IP=<pc-ip>
@@ -91,18 +108,51 @@ Echo mode:
 4. Press the web app arrow keys on the PC.
 5. Watch the Pi terminal print the received motor commands.
 
-ESC mode:
+ESP32 ESC mode:
 
 1. Start the backend and web app on the PC with `make pc-start`.
-2. Activate the Pi virtual environment and make sure `lgpio` imports correctly.
-3. Wire the ESC signal and ground leads to the Pi.
-4. Run `make pi-connect-esc PC_IP=<pc-ip-or-tailscale-ip>`.
+2. Flash the ESP32 firmware from `esp/`.
+3. Wire ESC signal and ground leads to the ESP32, with Pi and ESP32 grounds common.
+4. Activate the Pi virtual environment and run `make pi-connect-esp PC_IP=<pc-ip-or-tailscale-ip>`.
 5. Open the web app, wait for the motor panel, click `Arm Motors`, then use the arrow keys.
 
-## Direct Pi ESC Control
+## ESP32 Serial ESC Control
 
-This mode assumes ESCs that accept standard RC servo-style control pulses.
-DShot-only ESCs are not compatible with this gateway.
+This is the preferred motor path. It assumes ESCs that accept standard RC
+servo-style control pulses. DShot-only ESCs are not compatible with this
+firmware.
+
+Default wiring:
+
+- Pi USB -> ESP32 USB serial
+- Pi ground -> ESP32 ground
+- Left ESC signal -> ESP32 GPIO `18`
+- Right ESC signal -> ESP32 GPIO `19`
+- ESC grounds -> ESP32 ground
+
+Browser, Pi, and ESP32 safety behavior:
+
+1. The ESP32 boots with both ESC outputs held at neutral.
+2. The ESP32 publishes `motor.status` JSON over serial.
+3. The Pi republishes fresh ESP status to the backend as `motor.status`.
+4. The browser keeps the arrow keys disabled until the ESP32 reports
+   `readyForDrive=true`.
+5. You must click `Arm Motors` in the web UI.
+6. The ESP32 holds `ESC_ARM_PULSE_US` for `ESC_ARM_DELAY_MS`.
+7. While a key is held, the browser refreshes the `drive` command.
+8. If refreshes stop for longer than `ESC_WATCHDOG_TIMEOUT_MS`, the ESP32 forces
+   both ESCs back to neutral.
+9. If ESP status becomes stale, the Pi marks the motor driver unavailable and
+   the browser disables drive.
+
+Detailed setup: [ESP32 Serial ESC Control](../docs/esp32-serial-esc-control.md).
+
+## Legacy Direct Pi ESC Control
+
+This fallback mode assumes ESCs that accept standard RC servo-style control
+pulses and uses Raspberry Pi GPIO timing through `lgpio`. The current robot
+setup prefers the ESP32 serial path above because the Pi-generated PWM has shown
+motor stutter.
 
 Default GPIO wiring:
 
@@ -158,8 +208,8 @@ python3 pi/gateway.py
 
 ## Direct Arrow-Key Control (Pi -> ESP32)
 
-Use this when you want to drive LED behavior directly from the Pi terminal
-without running the backend/web stack.
+Use this when you want to bench-test the ESP32 ESC firmware directly from the Pi
+terminal without running the backend/web stack.
 
 ```bash
 python3 arrow_serial_bridge.py --port /dev/ttyUSB0 --baud 115200
@@ -167,14 +217,16 @@ python3 arrow_serial_bridge.py --port /dev/ttyUSB0 --baud 115200
 
 Controls:
 
-- Left arrow: left LED
-- Right arrow: right LED
-- Up arrow: both LEDs on
-- Down arrow: both LEDs smooth blink
+- `a`: arm motors
+- `d`: disarm motors
+- Arrow keys: send watchdog-limited drive commands
+- Space or `s`: stop
+- `+` / `-`: adjust speed
+- `m`: request ESP32 motor status
 - `q`: quit bridge
 
-The ESP firmware interprets ANSI arrow escape sequences, so this script sends
-`ESC [ A/B/C/D` over serial to match `esp/src/main.cpp`.
+The helper sends newline-delimited JSON commands to match the same serial
+protocol used by `gateway.py`.
 
 ## Environment Variables
 
@@ -186,6 +238,9 @@ The ESP firmware interprets ANSI arrow escape sequences, so this script sends
 - `PI_MOTOR_DRIVER` default: `esp` unless `PI_MOTOR_ECHO_ONLY=1`, supported values: `echo`, `esp`, `esc`
 - `PI_MOTOR_ECHO` default: `1` (log incoming motor commands to the Pi terminal)
 - `PI_MOTOR_ECHO_ONLY` default: `0` (legacy compatibility shortcut for `PI_MOTOR_DRIVER=echo`)
+
+Legacy direct Pi GPIO ESC variables:
+
 - `ESC_LEFT_GPIO` default: `18`
 - `ESC_RIGHT_GPIO` default: `19`
 - `ESC_GPIOCHIP` default: `-1` (auto-try `gpiochip4`, then `gpiochip0`)
@@ -241,18 +296,19 @@ Echo mode:
 - Backend forwards command to this gateway as `ui:command`.
 - Gateway prints the command in the Pi terminal and acknowledges it.
 
-Direct ESC mode:
+ESP serial mode:
+
+- Web UI requests `motor_status`, then sends `arm_motors`, `drive`, and `stop`.
+- Gateway writes command JSON to ESP32 over serial.
+- ESP32 generates servo-style pulses on its configured GPIO pins.
+- ESP32 keeps the ESCs at neutral while disarmed and during the arm delay.
+- Gateway republishes fresh ESP32 `motor.status` as backend `motor.status`.
+- The web UI only enables the arrow keys after the ESP32 reports `readyForDrive=true`.
+- If command refresh stops, the ESP32 watchdog returns both ESCs to neutral.
+
+Legacy direct ESC mode:
 
 - Web UI requests `motor_status`, then sends `arm_motors`, `drive`, and `stop`.
 - Gateway uses `lgpio` to output servo-style pulses on the configured GPIO pins.
 - The Pi keeps the ESCs at neutral while disarmed and during the arm delay.
-- The web UI only enables the arrow keys after the Pi reports `readyForDrive=true`.
-- If command refresh stops, the watchdog returns both ESCs to neutral.
-
-ESP serial mode:
-
-- Web UI sends command to backend (`/api/ui/command` or `/api/ui/drive`).
-- Backend forwards command to this gateway as `ui:command`.
-- Gateway writes command JSON to ESP32 over serial.
-- ESP32 sends telemetry/ack JSON lines back to gateway.
-- Gateway publishes telemetry to backend as events (`esp.*`).
+- If command refresh stops, the Pi watchdog returns both ESCs to neutral.

@@ -4,8 +4,8 @@
 
 - **Web app**: sends drive commands, receives telemetry/map/status.
 - **Backend**: command/event broker and realtime fan-out.
-- **Raspberry Pi gateway**: connects to backend, owns cameras/LiDAR, and can run motors in `echo`, direct `esc`, or `esp` bridge mode.
-- **ESP32**: optional serial motor companion for development or alternate low-level control.
+- **Raspberry Pi gateway**: connects to backend, owns cameras/LiDAR, and can run motors in `echo`, preferred `esp` serial mode, or legacy direct `esc` mode.
+- **ESP32**: serial motor companion that generates hardware-timed ESC pulses and reports motor safety state.
 
 ## Common Development Topology
 
@@ -13,6 +13,7 @@ Current tested setup:
 
 - PC runs the backend and serves the web app
 - Raspberry Pi runs `pi/gateway.py`
+- ESP32 connects to the Pi over USB serial and drives the ESC signal leads
 - Pi connects to the PC backend over LAN or Tailscale
 - Web app arrow keys become `drive` / `stop` commands on the Pi
 
@@ -25,10 +26,10 @@ the PC backend directly. In that case, use Tailscale or a different network.
 
 1. Web app -> backend: `POST /api/ui/drive` or WebSocket `ui:command`
 2. Backend -> Pi gateway: `ui:command`
-3. Web app requests `motor.status`; in ESC mode the UI keeps arrow keys disabled until the Pi reports `readyForDrive=true`
-4. In ESC mode the user sends `arm_motors`; the Pi holds neutral/arm pulse widths until the arm delay completes
-5. Pi gateway -> terminal echo output, direct ESC pulse updates, or ESP32 serial JSON command line
-6. ESP32 -> Pi gateway: serial JSON ack/telemetry (ESP mode only)
+3. Web app requests `motor.status`; in ESP mode the UI keeps arrow keys disabled until fresh ESP32 status reports `readyForDrive=true`
+4. In ESP mode the user sends `arm_motors`; the Pi forwards it to the ESP32
+5. Pi gateway -> terminal echo output, ESP32 serial JSON command line, or legacy direct ESC pulse updates
+6. ESP32 -> Pi gateway: serial JSON ack/status
 7. Pi gateway -> backend: `pi:event` (`motor.status`, `esp.*`, sensor events) and `pi:ack`
 8. Backend -> Web app: realtime updates over WebSocket
 
@@ -50,8 +51,9 @@ the PC backend directly. In that case, use Tailscale or a different network.
 ### 4) ESC watchdog behavior
 
 1. While an arrow key is held, the web app refreshes `drive` commands at a short interval.
-2. The Pi gateway clamps requested speed to its configured `ESC_MAX_SPEED`.
-3. If command refresh stops for longer than `ESC_WATCHDOG_TIMEOUT_MS`, the Pi forces both ESCs back to neutral.
+2. In ESP mode, the ESP32 clamps requested speed to its firmware `ESC_MAX_SPEED`.
+3. If command refresh stops for longer than `ESC_WATCHDOG_TIMEOUT_MS`, the ESP32 forces both ESCs back to neutral.
+4. If ESP32 motor status becomes stale, the Pi marks the motor driver unavailable.
 
 ## Message Envelope (Backend Event)
 

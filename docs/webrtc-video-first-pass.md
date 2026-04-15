@@ -115,10 +115,10 @@ Echo/no-hardware controls:
 make pi-connect-webrtc-echo PC_IP=<pc-ip-or-tailscale-ip>
 ```
 
-Direct ESC controls:
+ESP32 serial ESC controls:
 
 ```bash
-make pi-connect-webrtc-esc PC_IP=<pc-ip-or-tailscale-ip>
+make pi-connect-webrtc-esp PC_IP=<pc-ip-or-tailscale-ip>
 ```
 
 Those targets start two Pi processes:

@@ -1,5 +1,9 @@
 # Direct Pi ESC Drive Setup
 
+This is the legacy fallback path. The current preferred motor setup is
+[ESP32 Serial ESC Control](./esp32-serial-esc-control.md), where the Pi sends
+serial commands and the ESP32 generates the ESC pulses.
+
 This document describes the exact drive setup this repo is built around when the
 Raspberry Pi drives two ESCs directly from GPIO.
 
