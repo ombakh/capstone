@@ -56,6 +56,7 @@ MOTOR_DRIVER_ECHO = "echo"
 MOTOR_DRIVER_ESP = "esp"
 MOTOR_DRIVER_ESC = "esc"
 SUPPORTED_MOTOR_DRIVERS = {MOTOR_DRIVER_ECHO, MOTOR_DRIVER_ESP, MOTOR_DRIVER_ESC}
+ESP_MOTOR_STATUS_STALE_SEC = 3.0
 
 
 def now_iso() -> str:
@@ -220,6 +221,11 @@ class EspSerialBridge:
         self.baud = baud
         self._serial: Optional[Any] = None
         self._last_connect_attempt = 0.0
+        self._last_error = ""
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
 
     def _can_attempt_connect(self) -> bool:
         now = time.monotonic()
@@ -235,11 +241,13 @@ class EspSerialBridge:
         self._serial = None
 
     def _handle_serial_error(self, message: str, exc: Exception) -> None:
+        self._last_error = f"{message}: {exc}"
         logging.warning("%s: %s", message, exc)
         self._close_serial()
 
     def connect(self) -> bool:
         if serial is None:
+            self._last_error = "python package 'pyserial' is not installed"
             return False
         if self._serial and self._serial.is_open:
             return True
@@ -248,9 +256,11 @@ class EspSerialBridge:
 
         try:
             self._serial = serial.Serial(self.port, self.baud, timeout=0.05)
+            self._last_error = ""
             logging.info("ESP serial connected on %s @ %s", self.port, self.baud)
             return True
         except Exception as exc:
+            self._last_error = str(exc)
             logging.warning("ESP serial unavailable (%s): %s", self.port, exc)
             self._serial = None
             return False
@@ -288,6 +298,7 @@ class EspSerialBridge:
         try:
             payload = json.dumps(command, separators=(",", ":")) + "\n"
             self._serial.write(payload.encode("utf-8"))
+            self._serial.flush()
             return True
         except Exception as exc:
             self._handle_serial_error("ESP write error", exc)
@@ -1543,6 +1554,8 @@ class PiGateway:
         )
         self._last_esp_connected: Optional[bool] = None
         self._last_lidar_connected: Optional[bool] = None
+        self._last_esp_motor_status: Optional[JsonDict] = None
+        self._last_esp_motor_status_monotonic: Optional[float] = None
         self._last_motor_status_signature = ""
         self._last_motor_log_signature: Optional[str] = None
 
@@ -1584,24 +1597,74 @@ class PiGateway:
         )
         self._last_motor_log_signature = signature if command_name == "drive" else None
 
+    def _send_esp_motor_command(self, command_id: str, command_name: str, params: JsonDict) -> bool:
+        return self.esp.send_command(
+            {
+                "type": "command",
+                "id": command_id,
+                "command": command_name,
+                "params": params,
+                "timestamp": now_iso(),
+            }
+        )
+
+    def _cache_esp_motor_status(self, payload: JsonDict) -> None:
+        status = dict(payload)
+        status.pop("type", None)
+        status["driver"] = MOTOR_DRIVER_ESP
+        status["serialPort"] = self.config.esp_serial_port
+        self._last_esp_motor_status = status
+        self._last_esp_motor_status_monotonic = time.monotonic()
+
+    def _esp_motor_status_payload(self) -> JsonDict:
+        esp_available = self.esp.connected() or self.esp.connect()
+        now = time.monotonic()
+        cached_at = self._last_esp_motor_status_monotonic
+        status_is_fresh = (
+            self._last_esp_motor_status is not None
+            and cached_at is not None
+            and now - cached_at <= ESP_MOTOR_STATUS_STALE_SEC
+        )
+
+        if self._last_esp_motor_status is not None:
+            payload = dict(self._last_esp_motor_status)
+            payload["driver"] = MOTOR_DRIVER_ESP
+            payload["serialPort"] = self.config.esp_serial_port
+            if not esp_available:
+                payload["driverAvailable"] = False
+                payload["armed"] = False
+                payload["arming"] = False
+                payload["readyForDrive"] = False
+                payload["lastError"] = self.esp.last_error or "ESP serial bridge unavailable"
+            elif not status_is_fresh:
+                payload["driverAvailable"] = False
+                payload["armed"] = False
+                payload["arming"] = False
+                payload["readyForDrive"] = False
+                payload["lastError"] = "ESP motor status stale"
+            else:
+                payload["driverAvailable"] = payload.get("driverAvailable", True) is not False
+            return payload
+
+        return {
+            "driver": MOTOR_DRIVER_ESP,
+            "driverAvailable": False,
+            "requiresArm": True,
+            "armed": False,
+            "arming": False,
+            "readyForDrive": False,
+            "serialPort": self.config.esp_serial_port,
+            "maxSpeed": round(clamp_speed(self.config.esc_max_speed, fallback=0.15), 2),
+            "lastError": "waiting for ESP motor status" if esp_available else (self.esp.last_error or "ESP serial bridge unavailable"),
+        }
+
     def _motor_status_payload(self) -> JsonDict:
         if self.config.motor_driver == MOTOR_DRIVER_ESC and self.motor_controller is not None:
             self.motor_controller.connect()
             return self.motor_controller.status()
 
         if self.config.motor_driver == MOTOR_DRIVER_ESP:
-            esp_available = self.esp.connected() or self.esp.connect()
-            return {
-                "driver": MOTOR_DRIVER_ESP,
-                "driverAvailable": esp_available,
-                "requiresArm": False,
-                "armed": esp_available,
-                "arming": False,
-                "readyForDrive": esp_available,
-                "serialPort": self.config.esp_serial_port,
-                "maxSpeed": 1.0,
-                "lastError": None if esp_available else "ESP serial bridge unavailable",
-            }
+            return self._esp_motor_status_payload()
 
         return {
             "driver": MOTOR_DRIVER_ECHO,
@@ -1761,6 +1824,24 @@ class PiGateway:
             params = {}
 
         if command_name in {"arm_motors", "disarm_motors", "motor_status"}:
+            if self.config.motor_driver == MOTOR_DRIVER_ESP:
+                if self.config.motor_echo and command_name != "motor_status":
+                    self._log_motor_command(command_id, command_name, params, "esp")
+
+                forwarded = self._send_esp_motor_command(command_id, command_name, params)
+                await self._publish_motor_status_if_changed(ws, force=True)
+                await self._send_ack(
+                    ws,
+                    command_id=command_id,
+                    status=(
+                        "motor_status_requested"
+                        if command_name == "motor_status" and forwarded
+                        else ("forwarded_to_esp" if forwarded else "esp_unavailable")
+                    ),
+                    details={"command": command_name, "driver": self.config.motor_driver},
+                )
+                return
+
             if command_name == "motor_status":
                 await self._publish_motor_status_if_changed(ws, force=True)
                 await self._send_ack(
@@ -1844,15 +1925,7 @@ class PiGateway:
                 )
                 return
 
-            forwarded = self.esp.send_command(
-                {
-                    "type": "command",
-                    "id": command_id,
-                    "command": command_name,
-                    "params": params,
-                    "timestamp": now_iso(),
-                }
-            )
+            forwarded = self._send_esp_motor_command(command_id, command_name, params)
             await self._publish_motor_status_if_changed(ws)
             if command_name != "drive" or not forwarded:
                 await self._send_ack(
@@ -2012,6 +2085,9 @@ class PiGateway:
 
             event_type = f"esp.{str(esp_message.get('type', 'telemetry')).strip() or 'telemetry'}"
             await self._send_event(ws, event_type=event_type, payload=esp_message)
+            if esp_message.get("type") == "motor.status":
+                self._cache_esp_motor_status(esp_message)
+                await self._publish_motor_status_if_changed(ws, force=True)
 
     async def _motor_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         interval_sec = self.motor_controller.update_interval_sec if self.motor_controller is not None else 0.5
