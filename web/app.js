@@ -47,7 +47,7 @@ const controlButtons = new Map(
 
 const DEFAULT_DEVICE_ID = "pi-01";
 const DEFAULT_BACKEND_PORT = "3000";
-const DEFAULT_DRIVE_SPEED = 0.15;
+const DEFAULT_DRIVE_SPEED = 0.35;
 const DRIVE_SPEED_MIN = 0.05;
 const DRIVE_SPEED_MAX = 1;
 const DRIVE_SPEED_STEP = 0.05;

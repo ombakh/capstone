@@ -308,23 +308,42 @@ void markStatusDirty() {
 const char *findJsonKeyValueStart(const char *line, const char *key) {
     char pattern[32];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *keyStart = strstr(line, pattern);
-    if (keyStart == nullptr) {
-        return nullptr;
+    const size_t patternLength = strlen(pattern);
+    const char *searchFrom = line;
+
+    while (searchFrom != nullptr && *searchFrom != '\0') {
+        const char *keyStart = strstr(searchFrom, pattern);
+        if (keyStart == nullptr) {
+            return nullptr;
+        }
+
+        const char *prefix = keyStart;
+        while (prefix > line && isspace(static_cast<unsigned char>(prefix[-1]))) {
+            --prefix;
+        }
+
+        const bool looksLikeObjectKey =
+            prefix == line ||
+            prefix[-1] == '{' ||
+            prefix[-1] == ',';
+
+        const char *cursor = keyStart + patternLength;
+        while (*cursor != '\0' && isspace(static_cast<unsigned char>(*cursor))) {
+            ++cursor;
+        }
+
+        if (looksLikeObjectKey && *cursor == ':') {
+            ++cursor;
+            while (*cursor != '\0' && isspace(static_cast<unsigned char>(*cursor))) {
+                ++cursor;
+            }
+            return cursor;
+        }
+
+        searchFrom = keyStart + patternLength;
     }
 
-    const char *cursor = keyStart + strlen(pattern);
-    while (*cursor != '\0' && isspace(static_cast<unsigned char>(*cursor))) {
-        ++cursor;
-    }
-    if (*cursor != ':') {
-        return nullptr;
-    }
-    ++cursor;
-    while (*cursor != '\0' && isspace(static_cast<unsigned char>(*cursor))) {
-        ++cursor;
-    }
-    return cursor;
+    return nullptr;
 }
 
 bool extractJsonString(const char *line, const char *key, char *out, size_t outSize) {

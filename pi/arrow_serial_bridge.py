@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--speed",
         type=float,
-        default=float(os.getenv("ESP_ESC_TEST_SPEED", "0.15")),
+        default=float(os.getenv("ESP_ESC_TEST_SPEED", "0.35")),
         help="Drive speed ratio for arrow keys (default: %(default)s)",
     )
     parser.add_argument(

@@ -43,6 +43,29 @@ Monitor the JSON status stream:
 pio device monitor -d esp -b 115200
 ```
 
+Bench-test directly from a Mac or Linux host connected to the ESP32:
+
+```bash
+python3 esp/serial_motor_test.py --list-ports
+python3 esp/serial_motor_test.py --port /dev/cu.usbserial-XXXX
+```
+
+Controls:
+
+- `a`: arm
+- `d`: disarm
+- arrow keys: drive
+- space or `s`: stop
+- `+` / `-`: adjust speed
+- `m`: request status
+- `q`: quit
+
+Install `pyserial` first if needed:
+
+```bash
+pip install pyserial
+```
+
 ## Serial Commands
 
 The Pi gateway sends compact JSON lines like:
