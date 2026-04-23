@@ -222,6 +222,8 @@ class EspSerialBridge:
         self._serial: Optional[Any] = None
         self._last_connect_attempt = 0.0
         self._last_error = ""
+        self._read_buffer = ""
+        self._pending_messages: List[JsonDict] = []
 
     @property
     def last_error(self) -> str:
@@ -239,6 +241,8 @@ class EspSerialBridge:
             return
         close_quietly(self._serial, "close")
         self._serial = None
+        self._read_buffer = ""
+        self._pending_messages.clear()
 
     def _handle_serial_error(self, message: str, exc: Exception) -> None:
         self._last_error = f"{message}: {exc}"
@@ -257,6 +261,8 @@ class EspSerialBridge:
         try:
             self._serial = serial.Serial(self.port, self.baud, timeout=0.05)
             self._last_error = ""
+            self._read_buffer = ""
+            self._pending_messages.clear()
             logging.info("ESP serial connected on %s @ %s", self.port, self.baud)
             return True
         except Exception as exc:
@@ -268,20 +274,8 @@ class EspSerialBridge:
     def connected(self) -> bool:
         return bool(self._serial and self._serial.is_open)
 
-    def read_json(self) -> Optional[JsonDict]:
-        if not self.connect() or not self._serial:
-            return None
-
-        try:
-            if self._serial.in_waiting <= 0:
-                return None
-            line = self._serial.readline().decode("utf-8", errors="ignore").strip()
-            if not line:
-                return None
-        except Exception as exc:
-            self._handle_serial_error("ESP read error", exc)
-            return None
-
+    @staticmethod
+    def _parse_serial_line(line: str) -> JsonDict:
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError:
@@ -290,6 +284,36 @@ class EspSerialBridge:
         if isinstance(parsed, dict):
             return parsed
         return {"type": "raw", "value": parsed}
+
+    def read_json(self) -> Optional[JsonDict]:
+        if not self.connect() or not self._serial:
+            return None
+
+        if self._pending_messages:
+            return self._pending_messages.pop(0)
+
+        try:
+            bytes_waiting = self._serial.in_waiting
+            if bytes_waiting <= 0:
+                return None
+            chunk = self._serial.read(bytes_waiting).decode("utf-8", errors="ignore")
+        except Exception as exc:
+            self._handle_serial_error("ESP read error", exc)
+            return None
+
+        if not chunk:
+            return None
+
+        self._read_buffer += chunk
+        while "\n" in self._read_buffer:
+            raw_line, self._read_buffer = self._read_buffer.split("\n", 1)
+            line = raw_line.strip()
+            if line:
+                self._pending_messages.append(self._parse_serial_line(line))
+
+        if self._pending_messages:
+            return self._pending_messages.pop(0)
+        return None
 
     def send_command(self, command: JsonDict) -> bool:
         if not self.connect() or not self._serial:
