@@ -85,8 +85,9 @@ This repo assumes:
 - LiDAR connected over USB serial, typically `/dev/ttyUSB0`
 
 When the back camera is the active primary view, the frontend flips the LiDAR
-view by 180 degrees and remaps drive controls so they stay camera-relative.
-That means the UI perspective changes, not the underlying robot wiring.
+view by 180 degrees. Drive controls stay robot-relative: the right arrow sends
+robot `right`, the left arrow sends robot `left`, and camera selection does not
+change motor direction.
 
 ## PC Setup
 
@@ -161,24 +162,14 @@ network loss, or browser interruption.
 
 ## Drive Mapping
 
-### Front camera active
-
 - `Up`: both motors forward
 - `Down`: both motors reverse if `ESC_BIDIRECTIONAL=1`
 - `Left`: spin left with bidirectional ESCs, or pivot left with forward-only ESCs
 - `Right`: spin right with bidirectional ESCs, or pivot right with forward-only ESCs
 
-### Back camera active
-
-The frontend flips commands to match the rear-facing view:
-
-- `Up` sends robot `reverse`
-- `Down` sends robot `forward`
-- `Left` sends robot `right`
-- `Right` sends robot `left`
-
-This is only a UI remap. The Pi motor controller still accepts the same four
-robot directions: `forward`, `reverse`, `left`, and `right`.
+The mapping is the same for the front and back camera views. The frontend sends
+the same four robot directions in all camera modes: `forward`, `reverse`,
+`left`, and `right`.
 
 ## What the Pi Sends to the ESCs
 
@@ -301,4 +292,4 @@ If the robot does not drive correctly, check these in order:
 - One side spins backward on `Up`: set `ESC_LEFT_INVERTED=1` or `ESC_RIGHT_INVERTED=1`
 - Reverse does nothing: your ESC is likely forward-only and should use `ESC_BIDIRECTIONAL=0`
 - Robot keeps moving after command loss: verify the Pi watchdog is active and command refresh has not been modified
-- Camera view feels backward: use the camera switch button; the frontend remaps drive commands for the rear camera view automatically
+- Camera view feels backward: use the camera switch button; drive commands remain robot-relative in every camera view

@@ -85,13 +85,6 @@ const DRIVE_KEY_TO_DIRECTION = {
   ArrowRight: "right"
 };
 
-const REAR_CAMERA_DIRECTION_MAP = {
-  forward: "reverse",
-  reverse: "forward",
-  left: "right",
-  right: "left"
-};
-
 const urlParams = new URLSearchParams(window.location.search);
 
 const state = {
@@ -488,9 +481,7 @@ function getLidarAngleOffsetDeg() {
 }
 
 function getDriveDirectionForKey(key) {
-  const baseDirection = DRIVE_KEY_TO_DIRECTION[key];
-  if (!baseDirection) return null;
-  return isRearCameraPerspectiveActive() ? REAR_CAMERA_DIRECTION_MAP[baseDirection] : baseDirection;
+  return DRIVE_KEY_TO_DIRECTION[key] || null;
 }
 
 function getCameraStatus(name) {
@@ -2603,6 +2594,9 @@ function startDrive(key) {
   const direction = getDriveDirectionForKey(key);
   if (!direction || driveState.activeKey === key || !canDriveRobot()) return;
 
+  if (driveState.activeKey) {
+    setPressed(driveState.activeKey, false);
+  }
   driveState.activeKey = key;
   clearDriveRepeatTimer();
   sendActiveDriveCommand();
@@ -2733,7 +2727,7 @@ function setPressed(key, pressed) {
 function isInteractiveTarget(target) {
   const element = target instanceof Element ? target : null;
   if (!element) return false;
-  return Boolean(element.closest("input, textarea, select, button"));
+  return Boolean(element.closest("input, textarea, select, [contenteditable='true']"));
 }
 
 function handleControlStart(key) {
