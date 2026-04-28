@@ -48,6 +48,8 @@ try:
 except ImportError:  # pragma: no cover
     lgpio = None
 
+from serial_devices import choose_serial_port, list_serial_ports
+
 
 JsonDict = Dict[str, Any]
 
@@ -166,13 +168,27 @@ class Config:
         motor_echo_only = env_flag("PI_MOTOR_ECHO_ONLY", default=False)
         legacy_motor_driver = MOTOR_DRIVER_ECHO if motor_echo_only else MOTOR_DRIVER_ESP
         motor_driver = env_choice("PI_MOTOR_DRIVER", legacy_motor_driver, SUPPORTED_MOTOR_DRIVERS)
-        lidar_default_port = "/dev/ttyUSB1" if motor_driver == MOTOR_DRIVER_ESP else "/dev/ttyUSB0"
+        explicit_esp_port = os.getenv("ESP_SERIAL_PORT", "")
+        explicit_lidar_port = os.getenv("LIDAR_SERIAL_PORT") or os.getenv("PI_LIDAR_PORT") or ""
+        esp_serial_port = choose_serial_port(
+            role="esp",
+            explicit_port=explicit_esp_port,
+            fallback_port="/dev/ttyUSB0",
+            avoid_port=explicit_lidar_port,
+        )
+        lidar_fallback_port = "/dev/ttyUSB1" if motor_driver == MOTOR_DRIVER_ESP else "/dev/ttyUSB0"
+        lidar_port = choose_serial_port(
+            role="lidar",
+            explicit_port=explicit_lidar_port,
+            fallback_port=lidar_fallback_port,
+            avoid_port=esp_serial_port if motor_driver == MOTOR_DRIVER_ESP else "",
+        )
 
         return Config(
             backend_ws_base=os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:3000"),
             device_id=os.getenv("PI_DEVICE_ID", "pi-01"),
             device_token=os.getenv("PI_DEVICE_TOKEN", ""),
-            esp_serial_port=os.getenv("ESP_SERIAL_PORT", "/dev/ttyUSB0"),
+            esp_serial_port=esp_serial_port,
             esp_baud=env_int("ESP_BAUD", 115200),
             motor_driver=motor_driver,
             motor_echo=motor_echo,
@@ -205,8 +221,8 @@ class Config:
             camera_frame_height=env_int("CAMERA_FRAME_HEIGHT", 720),
             camera_jpeg_quality=env_int("CAMERA_JPEG_QUALITY", 60),
             camera_jpeg_enabled=env_flag("PI_CAMERA_JPEG_ENABLED", default=True),
-            lidar_enabled=env_flag("LIDAR_ENABLED", default=True),
-            lidar_port=os.getenv("LIDAR_SERIAL_PORT", lidar_default_port),
+            lidar_enabled=env_flag("LIDAR_ENABLED", default=env_flag("PI_LIDAR_ENABLED", default=True)),
+            lidar_port=lidar_port,
             lidar_max_distance_mm=env_int("LIDAR_MAX_DISTANCE_MM", 6000),
             lidar_min_distance_mm=env_int("LIDAR_MIN_DISTANCE_MM", 120),
             lidar_max_points=env_int("LIDAR_MAX_POINTS", 300),
@@ -1323,6 +1339,14 @@ class LidarBridge:
         self._sequence = 0
         self._connected = False
         self._last_scan_at: Optional[str] = None
+        self._last_measurement_at: Optional[str] = None
+        self._last_raw_scan_at: Optional[str] = None
+        self._raw_measurement_count = 0
+        self._raw_scan_count = 0
+        self._published_scan_count = 0
+        self._last_raw_scan_point_count = 0
+        self._last_published_scan_point_count = 0
+        self._last_rejected_scan_reason = ""
         self._last_error = ""
 
     def start(self) -> None:
@@ -1369,6 +1393,14 @@ class LidarBridge:
                 "connected": self._connected,
                 "port": self.port,
                 "lastScanAt": self._last_scan_at,
+                "lastMeasurementAt": self._last_measurement_at,
+                "lastRawScanAt": self._last_raw_scan_at,
+                "rawMeasurementCount": self._raw_measurement_count,
+                "rawScanCount": self._raw_scan_count,
+                "publishedScanCount": self._published_scan_count,
+                "lastRawScanPointCount": self._last_raw_scan_point_count,
+                "lastPublishedScanPointCount": self._last_published_scan_point_count,
+                "lastRejectedScanReason": self._last_rejected_scan_reason or None,
                 "lastError": self._last_error,
                 "maxDistanceMm": self.max_distance_mm,
                 "minDistanceMm": self.min_distance_mm,
@@ -1383,11 +1415,29 @@ class LidarBridge:
         with self._lock:
             self._last_error = error
 
+    def _record_measurement(self) -> None:
+        with self._lock:
+            self._raw_measurement_count += 1
+            self._last_measurement_at = now_iso()
+
+    def _record_raw_scan(self, point_count: int) -> None:
+        with self._lock:
+            self._raw_scan_count += 1
+            self._last_raw_scan_at = now_iso()
+            self._last_raw_scan_point_count = point_count
+
+    def _record_rejected_scan(self, reason: str) -> None:
+        with self._lock:
+            self._last_rejected_scan_reason = reason
+
     def _store_scan(self, payload: JsonDict) -> None:
         with self._lock:
             self._sequence += 1
             timestamp = now_iso()
             self._last_scan_at = timestamp
+            self._published_scan_count += 1
+            self._last_published_scan_point_count = int(payload.get("pointCount", 0))
+            self._last_rejected_scan_reason = ""
             self._latest_scan = {
                 **payload,
                 "sequence": self._sequence,
@@ -1465,6 +1515,7 @@ class LidarBridge:
                 continue
 
             new_scan, point = parsed
+            self._record_measurement()
             angle = point[1]
             if new_scan is None and last_angle is not None:
                 new_scan = angle < last_angle
@@ -1483,6 +1534,8 @@ class LidarBridge:
 
     def _normalize_scan(self, scan: Any) -> Optional[JsonDict]:
         points = []
+        invalid_distance_count = 0
+        out_of_range_count = 0
         for point in scan:
             if not isinstance(point, (tuple, list)) or len(point) < 3:
                 continue
@@ -1493,12 +1546,25 @@ class LidarBridge:
             except (TypeError, ValueError):
                 continue
 
+            if distance <= 0:
+                invalid_distance_count += 1
+                continue
+
             if distance < self.min_distance_mm or distance > self.max_distance_mm:
+                out_of_range_count += 1
                 continue
 
             points.append((angle, int(distance)))
 
         if not points:
+            if invalid_distance_count:
+                self._record_rejected_scan(f"all distances invalid ({invalid_distance_count})")
+            elif out_of_range_count:
+                self._record_rejected_scan(
+                    f"all points outside {self.min_distance_mm}-{self.max_distance_mm}mm ({out_of_range_count})"
+                )
+            else:
+                self._record_rejected_scan("scan had no parseable points")
             return None
 
         points.sort(key=lambda item: item[0])
@@ -1542,6 +1608,7 @@ class LidarBridge:
                     if self._stop_event.is_set():
                         break
 
+                    self._record_raw_scan(len(scan))
                     payload = self._normalize_scan(scan)
                     if payload:
                         self._store_scan(payload)
@@ -2174,11 +2241,19 @@ async def async_main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     config = Config.from_env()
+    serial_ports = list_serial_ports()
+    if serial_ports:
+        logging.info("Detected serial ports:")
+        for port in serial_ports:
+            logging.info("  %s", port.format())
+    else:
+        logging.info("Detected serial ports: none")
     logging.info(
-        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s lidarEnabled=%s lidarPort=%s cameraJpegEnabled=%s",
+        "Pi gateway starting deviceId=%s backend=%s motorDriver=%s espPort=%s lidarEnabled=%s lidarPort=%s cameraJpegEnabled=%s",
         config.device_id,
         config.ws_url,
         config.motor_driver,
+        config.esp_serial_port,
         config.lidar_enabled,
         config.lidar_port,
         config.camera_jpeg_enabled,

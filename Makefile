@@ -11,11 +11,12 @@ HOST_IP ?= $(or $(PC_IP),$(MAC_IP))
 PI_DEVICE_ID ?= pi-01
 PI_LIDAR_ENABLED ?= 1
 PI_LIDAR_PORT ?=
+ESP_SERIAL_PORT ?=
 PI_VENV_DIR ?= .venv
-PI_GATEWAY_ENV = BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED)$(if $(strip $(PI_LIDAR_PORT)), LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT),)
+PI_GATEWAY_ENV = BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID) LIDAR_ENABLED=$(PI_LIDAR_ENABLED)$(if $(strip $(PI_LIDAR_PORT)), LIDAR_SERIAL_PORT=$(PI_LIDAR_PORT),)$(if $(strip $(ESP_SERIAL_PORT)), ESP_SERIAL_PORT=$(ESP_SERIAL_PORT),)
 PI_WEBRTC_ENV = BACKEND_WS_BASE=ws://$(HOST_IP):$(BACKEND_PORT) PI_DEVICE_ID=$(PI_DEVICE_ID)
 
-.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pc-setup pc-backend pc-web pc-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-run-esp pi-run-esc pi-run-webrtc pi-connect-echo pi-connect-esp pi-connect-esc pi-connect-webrtc-echo pi-connect-webrtc-esp pi-connect-webrtc-esc pi-backend-check pi-keys
+.PHONY: help serve check run backend-install backend-ensure backend-dev backend-start pc-setup pc-backend pc-web pc-start mac-setup mac-backend mac-web mac-start pi-install pi-setup pi-run pi-run-echo pi-run-esp pi-run-esc pi-run-webrtc pi-connect-echo pi-connect-esp pi-connect-esc pi-connect-webrtc-echo pi-connect-webrtc-esp pi-connect-webrtc-esc pi-backend-check pi-serial-list pi-lidar-check pi-keys
 
 help:
 	@echo "Available targets:"
@@ -43,6 +44,8 @@ help:
 	@echo "  make pi-connect-webrtc-esp  PC_IP=<ip> - Connect ESP32 ESC controls and publish WebRTC video"
 	@echo "  make pi-connect-webrtc-esc  PC_IP=<ip> - Connect legacy direct Pi GPIO ESC controls and publish WebRTC video"
 	@echo "  make pi-backend-check PC_IP=<ip> - Check backend health from the Pi"
+	@echo "  make pi-serial-list  - List Pi serial devices and stable by-id aliases"
+	@echo "  make pi-lidar-check  - Probe LiDAR directly on the Pi"
 	@echo "  make pi-keys         - Run keyboard-to-ESP serial bridge"
 	@echo "  make help   - Show this help message"
 
@@ -202,6 +205,18 @@ pi-backend-check:
 		exit 1; \
 	fi
 	curl --fail --show-error --silent "http://$(HOST_IP):$(BACKEND_PORT)/health"
+
+pi-serial-list:
+	@if [ -f "$(PI_VENV_DIR)/bin/activate" ]; then \
+		. "$(PI_VENV_DIR)/bin/activate"; \
+	fi; \
+	python3 pi/serial_list.py
+
+pi-lidar-check:
+	@if [ -f "$(PI_VENV_DIR)/bin/activate" ]; then \
+		. "$(PI_VENV_DIR)/bin/activate"; \
+	fi; \
+	python3 pi/lidar_check.py $(if $(strip $(PI_LIDAR_PORT)),--port $(PI_LIDAR_PORT),)
 
 pi-keys:
 	python3 pi/arrow_serial_bridge.py

@@ -219,6 +219,33 @@ function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function createClientNonce() {
+  const browserCrypto = globalThis.crypto;
+  if (typeof browserCrypto?.randomUUID === "function") {
+    return browserCrypto.randomUUID();
+  }
+
+  if (typeof browserCrypto?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    browserCrypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      hex.slice(12, 16),
+      hex.slice(16, 20),
+      hex.slice(20)
+    ].join("-");
+  }
+
+  return `nonce-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
 function resolveBackendWsUrl() {
   const explicitWsUrl = urlParams.get("backendWs");
   if (explicitWsUrl) return explicitWsUrl;
@@ -537,7 +564,7 @@ function cameraHasRenderableFeed(name) {
   const feed = getCameraState(name);
   if (!feed) return false;
 
-  if (webrtc.enabled) return Boolean(getWebRtcCameraStream(name));
+  if (getWebRtcCameraStream(name)) return true;
   if (feed.frameSrc) return true;
   return Boolean(getCameraStatus(name)?.streaming);
 }
@@ -855,7 +882,7 @@ function sendLatencyPing() {
   if (!deviceState.connected || !backend.ws || backend.ws.readyState !== WebSocket.OPEN) return;
   if (latencyState.pendingByNonce.size > 0 || latencyState.pendingByCommandId.size > 0) return;
 
-  const clientNonce = crypto.randomUUID();
+  const clientNonce = createClientNonce();
   latencyState.pendingByNonce.set(clientNonce, performance.now());
   sendBackendMessage({
     type: "ui:command",
@@ -1060,6 +1087,12 @@ function applyLidarStatus(payload) {
       `connected=${payload.connected ?? "unknown"}`,
       `driverAvailable=${payload.driverAvailable ?? "unknown"}`,
       `port=${payload.port || "unknown"}`,
+      `rawMeasurements=${payload.rawMeasurementCount ?? "unknown"}`,
+      `rawScans=${payload.rawScanCount ?? "unknown"}`,
+      `publishedScans=${payload.publishedScanCount ?? "unknown"}`,
+      `lastMeasurementAt=${payload.lastMeasurementAt || ""}`,
+      `lastScanAt=${payload.lastScanAt || ""}`,
+      `lastRejectedScanReason=${payload.lastRejectedScanReason || ""}`,
       `lastError=${payload.lastError || ""}`
     ].join(" ")
   );
@@ -1466,10 +1499,11 @@ function handleCommandAcceptedMessage(message) {
 }
 
 function handleCameraFrameMessage(message) {
-  if (webrtc.enabled) return;
-
   const frame = message.frame;
   if (!isObject(frame) || frame.deviceId !== backend.deviceId) return;
+
+  const cameraName = normalizeCameraName(frame.cameraName);
+  if (webrtc.enabled && getWebRtcCameraStream(cameraName)) return;
 
   setDeviceConnected(true);
   applyCameraFrame(frame);

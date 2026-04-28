@@ -157,6 +157,33 @@ default. The Makefile leaves the serial device unset unless you pass
 `PI_LIDAR_PORT=/dev/ttyUSB1`, so `gateway.py` can apply its motor-driver-specific
 default. Disable streaming with `PI_LIDAR_ENABLED=0`.
 
+To isolate LiDAR hardware from the webapp path, stop the Pi gateway and run
+this on the Pi:
+
+```bash
+make pi-serial-list
+make pi-lidar-check
+```
+
+If the LiDAR is not on the default serial device, pass the detected port:
+
+```bash
+make pi-lidar-check PI_LIDAR_PORT=/dev/ttyUSB0
+```
+
+The Pi gateway also logs the detected serial devices and the selected `espPort`
+and `lidarPort` at startup. If the ESP32 and LiDAR swap `/dev/ttyUSB*` numbers,
+prefer passing the stable `/dev/serial/by-id/...` path shown by
+`make pi-serial-list` as `ESP_SERIAL_PORT` or `PI_LIDAR_PORT`.
+
+For example:
+
+```bash
+make pi-connect-webrtc-esp PC_IP=192.168.1.25 \
+  ESP_SERIAL_PORT=/dev/serial/by-id/<esp32-device> \
+  PI_LIDAR_PORT=/dev/serial/by-id/<lidar-device>
+```
+
 ### 4. Use the web app
 
 Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
