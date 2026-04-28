@@ -177,6 +177,8 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
             str(max(120, self.config.height)),
             "--quality",
             str(clamp_int(self.config.jpeg_quality, 20, 95)),
+            "--hflip",
+            "--vflip",
             "--output",
             "-",
         ]
@@ -424,6 +426,8 @@ class OpenCvCameraTrack(VideoStreamTrack):
         if not ok or image is None:
             self._release_capture()
             raise RuntimeError("OpenCV camera read failed")
+
+        image = cv2.rotate(image, cv2.ROTATE_180)
 
         decode_started_at = time.perf_counter()
         frame = VideoFrame.from_ndarray(image, format="bgr24")

@@ -1008,6 +1008,8 @@ class CameraWorker:
             str(self.frame_height),
             "--quality",
             str(self.jpeg_quality),
+            "--hflip",
+            "--vflip",
             "--output",
             "-",
         ]
@@ -1172,6 +1174,8 @@ class CameraWorker:
                             error="opencv read failed",
                         )
                         break
+
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
 
                     ok, encoded = cv2.imencode(
                         ".jpg",
