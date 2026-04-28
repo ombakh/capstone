@@ -13,10 +13,9 @@ import asyncio
 import io
 import logging
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
@@ -150,6 +149,7 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
         self._buffer = bytearray()
         self._process: Optional[asyncio.subprocess.Process] = None
         self._reader_task: Optional[asyncio.Task[None]] = None
+        self._stderr_task: Optional[asyncio.Task[None]] = None
         self._latest_jpeg: Optional[tuple[bytes, float]] = None
         self._latest_event = asyncio.Event()
         self._has_unconsumed_frame = False
@@ -196,14 +196,24 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
         self._process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
         if self._process.stdout is None:
             self._terminate_process()
             raise RuntimeError("camera process did not expose stdout")
+        if self._process.stderr is not None:
+            self._stderr_task = asyncio.create_task(
+                self._stderr_loop(self._process.stderr),
+                name=f"webrtc-camera-stderr-{self.config.camera_index}",
+            )
         return self._process
 
     def _terminate_process(self) -> None:
+        stderr_task = self._stderr_task
+        self._stderr_task = None
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+
         process = self._process
         self._process = None
         if process is None or process.returncode is not None:
@@ -213,6 +223,33 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
             process.terminate()
         except ProcessLookupError:
             return
+
+    async def _stderr_loop(self, stream: Any) -> None:
+        line_count = 0
+        suppressed = False
+        while self.readyState == "live":
+            try:
+                line = await stream.readline()
+            except Exception as exc:
+                logging.warning("WebRTC camera stderr read failed index=%s error=%s", self.config.camera_index, exc)
+                return
+
+            if not line:
+                return
+
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+
+            line_count += 1
+            if line_count > 40:
+                if not suppressed:
+                    suppressed = True
+                    logging.info("WebRTC camera stderr suppressed index=%s after 40 lines", self.config.camera_index)
+                continue
+
+            log = logging.warning if any(token in text.lower() for token in ("error", "fail", "no cameras")) else logging.info
+            log("WebRTC camera stderr index=%s: %s", self.config.camera_index, text)
 
     @staticmethod
     def _extract_jpegs(buffer: bytearray) -> List[bytes]:
@@ -252,7 +289,11 @@ class RpicamMjpegCameraTrack(VideoStreamTrack):
             if not chunk:
                 return_code = process.returncode
                 self._terminate_process()
-                logging.warning("WebRTC camera process ended with code %s", return_code)
+                logging.warning(
+                    "WebRTC camera process ended index=%s code=%s",
+                    self.config.camera_index,
+                    return_code,
+                )
                 await asyncio.sleep(0.5)
                 continue
 

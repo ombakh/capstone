@@ -1671,6 +1671,7 @@ class PiGateway:
         self._last_esp_motor_status_monotonic: Optional[float] = None
         self._last_motor_status_signature = ""
         self._last_motor_log_signature: Optional[str] = None
+        self._esp_safe_disarm_sent = False
 
     @staticmethod
     def _format_command_value(value: Any) -> str:
@@ -1720,6 +1721,35 @@ class PiGateway:
                 "timestamp": now_iso(),
             }
         )
+
+    def _mark_cached_esp_status_disarmed(self, reason: str) -> None:
+        if self._last_esp_motor_status is None:
+            return
+
+        self._last_esp_motor_status = {
+            **self._last_esp_motor_status,
+            "armed": False,
+            "arming": False,
+            "readyForDrive": False,
+            "direction": "stop",
+            "reason": reason,
+        }
+        self._last_esp_motor_status_monotonic = time.monotonic()
+
+    def _send_esp_safe_disarm(self, reason: str) -> bool:
+        if self.config.motor_driver != MOTOR_DRIVER_ESP or self._esp_safe_disarm_sent:
+            return self._esp_safe_disarm_sent
+
+        sent = self._send_esp_motor_command(
+            command_id=f"gateway-{reason}",
+            command_name="disarm_motors",
+            params={"reason": reason},
+        )
+        if sent:
+            self._esp_safe_disarm_sent = True
+            self._mark_cached_esp_status_disarmed(reason)
+            logging.info("ESP safe disarm sent reason=%s port=%s", reason, self.config.esp_serial_port or "-")
+        return sent
 
     def _cache_esp_motor_status(self, payload: JsonDict) -> None:
         status = dict(payload)
@@ -1783,7 +1813,7 @@ class PiGateway:
             "driver": MOTOR_DRIVER_ECHO,
             "driverAvailable": True,
             "requiresArm": False,
-            "armed": True,
+            "armed": False,
             "arming": False,
             "readyForDrive": True,
             "maxSpeed": 1.0,
@@ -1838,6 +1868,7 @@ class PiGateway:
             )
             await self._publish_temperature(ws)
             await self._send_event(ws, event_type="camera.status", payload=self.cameras.snapshot())
+            self._send_esp_safe_disarm("gateway_session_start")
             await self._publish_motor_status_if_changed(ws, force=True)
 
             tasks = [
@@ -2145,10 +2176,16 @@ class PiGateway:
         ws: websockets.WebSocketClientProtocol,
         connected: bool,
     ) -> None:
+        if not connected:
+            self._esp_safe_disarm_sent = False
+
         if self._last_esp_connected is not None and self._last_esp_connected == connected:
             return
 
         self._last_esp_connected = connected
+        if connected:
+            self._send_esp_safe_disarm("esp_connected")
+
         await self._send_event(
             ws,
             event_type="esp.connection",

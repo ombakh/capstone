@@ -271,12 +271,12 @@ Legacy direct Pi GPIO ESC variables:
 - `PI_CAMERA_JPEG_ENABLED` default: `1` (set `0` when `pi/webrtc_publisher.py` owns the camera)
 - `WEBRTC_CAMERA_FRONT_INDEX` default: `WEBRTC_CAMERA_INDEX` / `CAMERA_FRONT_INDEX` / `0`
 - `WEBRTC_CAMERA_BACK_INDEX` default: `CAMERA_BACK_INDEX` / `1`
-- `WEBRTC_CAMERA_NAMES` default: `front` (set `front,back` to publish both WebRTC tracks)
+- `WEBRTC_CAMERA_NAMES` default: `front,back` (set `front` to publish only the front WebRTC track)
 - `WEBRTC_CAMERA_BACKEND` default: `auto`, supported values: `auto`, `rpicam`, `opencv`
 - `WEBRTC_CAMERA_WIDTH` / `WEBRTC_CAMERA_HEIGHT` default to `640` / `480`
 - `WEBRTC_CAMERA_FPS` default: `20`
 - `WEBRTC_CAMERA_FRONT_WIDTH` / `WEBRTC_CAMERA_FRONT_HEIGHT` / `WEBRTC_CAMERA_FRONT_FPS`: override the front WebRTC camera profile
-- `WEBRTC_CAMERA_BACK_WIDTH` / `WEBRTC_CAMERA_BACK_HEIGHT` / `WEBRTC_CAMERA_BACK_FPS`: override the back WebRTC camera profile
+- `WEBRTC_CAMERA_BACK_WIDTH` / `WEBRTC_CAMERA_BACK_HEIGHT` / `WEBRTC_CAMERA_BACK_FPS`: override the back WebRTC camera profile, defaulting to at most `512x384@12fps`
 - `WEBRTC_VIDEO_CODEC` default: `H264` (prefers H.264 in WebRTC negotiation)
 - `WEBRTC_STATS_INTERVAL_SEC` default: `2`
 - `WEBRTC_LOG_SDP` default: `1`

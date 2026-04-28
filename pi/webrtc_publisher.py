@@ -27,7 +27,7 @@ from webrtc_camera import CameraTrackConfig, create_camera_track
 
 JsonDict = Dict[str, Any]
 SUPPORTED_CAMERA_NAMES: Tuple[str, str] = ("front", "back")
-DEFAULT_CAMERA_NAMES: Tuple[str, ...] = ("front",)
+DEFAULT_CAMERA_NAMES: Tuple[str, ...] = SUPPORTED_CAMERA_NAMES
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -56,9 +56,9 @@ def env_int_any(names: tuple[str, ...], default: int) -> int:
 def env_camera_names() -> Tuple[str, ...]:
     raw = os.getenv("WEBRTC_CAMERA_NAMES") or os.getenv("WEBRTC_CAMERAS")
     if raw is None:
-        if env_flag("WEBRTC_SECOND_CAMERA_ENABLED", default=False):
-            return SUPPORTED_CAMERA_NAMES
-        return DEFAULT_CAMERA_NAMES
+        if env_flag("WEBRTC_SECOND_CAMERA_ENABLED", default=True):
+            return DEFAULT_CAMERA_NAMES
+        return ("front",)
 
     camera_names: List[str] = []
     for item in raw.split(","):
@@ -158,10 +158,10 @@ class Config:
             camera_front_height=env_int("WEBRTC_CAMERA_FRONT_HEIGHT", camera_height),
             camera_front_fps=env_float("WEBRTC_CAMERA_FRONT_FPS", camera_fps),
             camera_front_jpeg_quality=env_int("WEBRTC_CAMERA_FRONT_JPEG_QUALITY", camera_jpeg_quality),
-            camera_back_width=env_int("WEBRTC_CAMERA_BACK_WIDTH", camera_width),
-            camera_back_height=env_int("WEBRTC_CAMERA_BACK_HEIGHT", camera_height),
-            camera_back_fps=env_float("WEBRTC_CAMERA_BACK_FPS", camera_fps),
-            camera_back_jpeg_quality=env_int("WEBRTC_CAMERA_BACK_JPEG_QUALITY", camera_jpeg_quality),
+            camera_back_width=env_int("WEBRTC_CAMERA_BACK_WIDTH", min(camera_width, 512)),
+            camera_back_height=env_int("WEBRTC_CAMERA_BACK_HEIGHT", min(camera_height, 384)),
+            camera_back_fps=env_float("WEBRTC_CAMERA_BACK_FPS", min(camera_fps, 12.0)),
+            camera_back_jpeg_quality=env_int("WEBRTC_CAMERA_BACK_JPEG_QUALITY", min(camera_jpeg_quality, 60)),
             video_codec=os.getenv("WEBRTC_VIDEO_CODEC", "H264"),
             stats_interval_sec=env_float("WEBRTC_STATS_INTERVAL_SEC", 2.0),
             camera_names=env_camera_names(),

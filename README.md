@@ -198,6 +198,19 @@ camera index `0` as the front feed and camera index `1` as the back feed. The
 WebRTC targets publish both feeds over WebRTC; the older non-WebRTC Pi targets
 still carry camera frames over the backend WebSocket path.
 
+To verify both camera indexes outside the webapp/WebRTC path, stop the Pi
+service and run:
+
+```bash
+make pi-camera-check
+```
+
+The check captures each camera once, then runs a short simultaneous
+WebRTC-style stream probe. If the still captures pass but the simultaneous
+stream fails, check camera power/cables or lower the WebRTC resolution/FPS. If
+the reported camera indexes are reversed or different, override them with
+`WEBRTC_CAMERA_FRONT_INDEX` and `WEBRTC_CAMERA_BACK_INDEX` in the service.
+
 Expected Pi output:
 
 ```text
