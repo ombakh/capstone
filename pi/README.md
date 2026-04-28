@@ -281,7 +281,7 @@ Legacy direct Pi GPIO ESC variables:
 - `WEBRTC_STATS_INTERVAL_SEC` default: `2`
 - `WEBRTC_LOG_SDP` default: `1`
 - `LIDAR_ENABLED` default: `1` (set `0` to disable streaming)
-- `LIDAR_SERIAL_PORT` / `PI_LIDAR_PORT`: override the LiDAR serial port. Without an override the gateway tries to choose a detected serial device that is not the ESP32 port, falling back to `/dev/ttyUSB1` when `PI_MOTOR_DRIVER=esp`, otherwise `/dev/ttyUSB0`.
+- `LIDAR_SERIAL_PORT` / `PI_LIDAR_PORT`: override the LiDAR serial port. Without an override the gateway prioritizes LiDAR when only one USB serial device is detected, then tries to choose a detected serial device that is not the ESP32 port, falling back to `/dev/ttyUSB1` when `PI_MOTOR_DRIVER=esp`, otherwise `/dev/ttyUSB0`.
 - `LIDAR_MAX_DISTANCE_MM` default: `6000`
 - `LIDAR_MIN_DISTANCE_MM` default: `120`
 - `LIDAR_MAX_POINTS` default: `300`

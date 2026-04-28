@@ -89,6 +89,12 @@ def first_existing_by_id_for_device(device: str) -> Optional[str]:
     return None
 
 
+def same_serial_device(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    return os.path.realpath(left) == os.path.realpath(right)
+
+
 def list_serial_ports() -> List[SerialPortInfo]:
     if list_ports is None:
         devices = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
@@ -139,6 +145,7 @@ def choose_serial_port(
     explicit_port: str,
     fallback_port: str,
     avoid_port: str = "",
+    allow_fallback: bool = True,
 ) -> str:
     if explicit_port:
         return explicit_port
@@ -160,12 +167,12 @@ def choose_serial_port(
 
     candidates = []
     for port in ports:
-        if avoid_realpath and os.path.realpath(port.device) == avoid_realpath:
+        if avoid_realpath and same_serial_device(port.device, avoid_port):
             continue
         candidates.append((score_port(port, keywords, excluded_keywords), port))
 
     if not candidates:
-        return fallback_port
+        return fallback_port if allow_fallback and not same_serial_device(fallback_port, avoid_port) else ""
 
     candidates.sort(key=lambda item: (item[0], item[1].stable_device), reverse=True)
     best_score, best_port = candidates[0]
@@ -173,9 +180,8 @@ def choose_serial_port(
         return best_port.stable_device
 
     for port in ports:
-        if avoid_realpath and os.path.realpath(port.device) == avoid_realpath:
+        if avoid_realpath and same_serial_device(port.device, avoid_port):
             continue
         return port.stable_device
 
-    return fallback_port
-
+    return fallback_port if allow_fallback and not same_serial_device(fallback_port, avoid_port) else ""

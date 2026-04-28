@@ -176,6 +176,11 @@ and `lidarPort` at startup. If the ESP32 and LiDAR swap `/dev/ttyUSB*` numbers,
 prefer passing the stable `/dev/serial/by-id/...` path shown by
 `make pi-serial-list` as `ESP_SERIAL_PORT` or `PI_LIDAR_PORT`.
 
+When LiDAR is enabled and only one USB serial device is detected, the gateway
+reserves that device for LiDAR and leaves the ESP motor serial port unassigned
+unless `ESP_SERIAL_PORT` is explicitly set. This keeps LiDAR scans working even
+when the ESP32/motor controller is not plugged in.
+
 For example:
 
 ```bash

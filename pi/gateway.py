@@ -48,7 +48,7 @@ try:
 except ImportError:  # pragma: no cover
     lgpio = None
 
-from serial_devices import choose_serial_port, list_serial_ports
+from serial_devices import choose_serial_port, list_serial_ports, same_serial_device
 
 
 JsonDict = Dict[str, Any]
@@ -168,21 +168,40 @@ class Config:
         motor_echo_only = env_flag("PI_MOTOR_ECHO_ONLY", default=False)
         legacy_motor_driver = MOTOR_DRIVER_ECHO if motor_echo_only else MOTOR_DRIVER_ESP
         motor_driver = env_choice("PI_MOTOR_DRIVER", legacy_motor_driver, SUPPORTED_MOTOR_DRIVERS)
+        lidar_enabled = env_flag("LIDAR_ENABLED", default=env_flag("PI_LIDAR_ENABLED", default=True))
         explicit_esp_port = os.getenv("ESP_SERIAL_PORT", "")
         explicit_lidar_port = os.getenv("LIDAR_SERIAL_PORT") or os.getenv("PI_LIDAR_PORT") or ""
+        detected_serial_ports = list_serial_ports()
+        lidar_fallback_port = "/dev/ttyUSB1" if motor_driver == MOTOR_DRIVER_ESP else "/dev/ttyUSB0"
+
+        if lidar_enabled and not explicit_lidar_port and not explicit_esp_port and len(detected_serial_ports) == 1:
+            lidar_port = detected_serial_ports[0].stable_device
+        elif lidar_enabled:
+            lidar_port = choose_serial_port(
+                role="lidar",
+                explicit_port=explicit_lidar_port,
+                fallback_port=lidar_fallback_port,
+                avoid_port=explicit_esp_port,
+            )
+        else:
+            lidar_port = explicit_lidar_port or lidar_fallback_port
+
         esp_serial_port = choose_serial_port(
             role="esp",
             explicit_port=explicit_esp_port,
             fallback_port="/dev/ttyUSB0",
-            avoid_port=explicit_lidar_port,
+            avoid_port=lidar_port if lidar_enabled else "",
+            allow_fallback=not (lidar_enabled and bool(lidar_port) and not explicit_esp_port),
         )
-        lidar_fallback_port = "/dev/ttyUSB1" if motor_driver == MOTOR_DRIVER_ESP else "/dev/ttyUSB0"
-        lidar_port = choose_serial_port(
-            role="lidar",
-            explicit_port=explicit_lidar_port,
-            fallback_port=lidar_fallback_port,
-            avoid_port=esp_serial_port if motor_driver == MOTOR_DRIVER_ESP else "",
-        )
+
+        if (
+            lidar_enabled
+            and esp_serial_port
+            and lidar_port
+            and same_serial_device(esp_serial_port, lidar_port)
+            and not explicit_esp_port
+        ):
+            esp_serial_port = ""
 
         return Config(
             backend_ws_base=os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:3000"),
@@ -221,7 +240,7 @@ class Config:
             camera_frame_height=env_int("CAMERA_FRAME_HEIGHT", 720),
             camera_jpeg_quality=env_int("CAMERA_JPEG_QUALITY", 60),
             camera_jpeg_enabled=env_flag("PI_CAMERA_JPEG_ENABLED", default=True),
-            lidar_enabled=env_flag("LIDAR_ENABLED", default=env_flag("PI_LIDAR_ENABLED", default=True)),
+            lidar_enabled=lidar_enabled,
             lidar_port=lidar_port,
             lidar_max_distance_mm=env_int("LIDAR_MAX_DISTANCE_MM", 6000),
             lidar_min_distance_mm=env_int("LIDAR_MIN_DISTANCE_MM", 120),
@@ -268,6 +287,9 @@ class EspSerialBridge:
     def connect(self) -> bool:
         if serial is None:
             self._last_error = "python package 'pyserial' is not installed"
+            return False
+        if not self.port:
+            self._last_error = "ESP serial port not configured; LiDAR is using the only detected serial device"
             return False
         if self._serial and self._serial.is_open:
             return True
