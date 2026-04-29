@@ -2,7 +2,7 @@
 
 This PlatformIO project contains the ESP32 firmware for low-level motor signal
 generation. The Raspberry Pi sends newline-delimited JSON commands over serial;
-the ESP32 owns the ESC PWM outputs.
+the ESP32 owns the ESC PWM outputs for the complete robot.
 
 ## What It Does
 
@@ -13,6 +13,28 @@ the ESP32 owns the ESC PWM outputs.
 - Ramps pulse widths toward targets to avoid abrupt throttle changes.
 - Publishes `motor.status` JSON lines back to the Pi once per second and on state
   changes.
+
+## Complete Robot Configuration
+
+The firmware source has conservative forward-only compile defaults, but the
+checked-in [platformio.ini](./platformio.ini) overrides them for the complete
+robot's bidirectional ESCs:
+
+| Setting | Current repo value |
+| --- | --- |
+| `ESC_BIDIRECTIONAL` | `1` |
+| `ESC_ARM_PULSE_US` | `1500` |
+| `ESC_NEUTRAL_PULSE_US` | `1500` |
+| `ESC_FORWARD_MIN_PULSE_US` | `1560` |
+| `ESC_FORWARD_MAX_PULSE_US` | `1900` |
+| `ESC_REVERSE_MIN_PULSE_US` | `1440` |
+| `ESC_REVERSE_MAX_PULSE_US` | `1100` |
+| `ESC_MAX_SPEED` | `0.35f` |
+
+Keep those values synchronized with the ESC calibration verified on the bench.
+The checked-in upload and monitor port point at the development USB adapter;
+override them from the command line or edit `platformio.ini` if your adapter
+enumerates differently.
 
 ## Wiring
 
@@ -87,8 +109,8 @@ and with `motor.status` lines for frontend safety state.
 
 ## Tuning
 
-Defaults are defined in [src/main.cpp](./src/main.cpp). Override them with
-PlatformIO build flags when needed:
+Compile defaults are defined in [src/main.cpp](./src/main.cpp). Override them
+with PlatformIO build flags when needed:
 
 ```ini
 build_flags =
@@ -101,7 +123,8 @@ build_flags =
   -D ESC_FORWARD_MAX_PULSE_US=2000
 ```
 
-For bidirectional car ESCs, start with:
+For another bidirectional ESC calibration, start from the current repo flags and
+adjust the pulse widths:
 
 ```ini
 build_flags =
@@ -110,7 +133,14 @@ build_flags =
   -D ESC_NEUTRAL_PULSE_US=1500
   -D ESC_FORWARD_MIN_PULSE_US=1560
   -D ESC_FORWARD_MAX_PULSE_US=1900
+  -D ESC_REVERSE_MIN_PULSE_US=1440
+  -D ESC_REVERSE_MAX_PULSE_US=1100
+  -D ESC_MAX_SPEED=0.35f
 ```
 
 Use the lower speed cap until each ESC is calibrated and the drivetrain is
 tested on a stand.
+
+If one side of the drivetrain is mechanically mirrored, add
+`ESC_LEFT_INVERTED=1` or `ESC_RIGHT_INVERTED=1` instead of changing the browser
+direction mapping.

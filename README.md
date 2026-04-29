@@ -1,23 +1,29 @@
 # Capstone
 
 Browser-based robot control app with directional controls, backend command routing,
-Pi telemetry, dual Pi camera streaming, session recording for LiDAR plus both
-camera feeds, and ESP32 serial ESC control.
+Pi telemetry, dual Pi camera streaming, backend-managed session recording, and
+ESP32 serial ESC control.
 
-WebRTC video first pass: [docs/webrtc-video-first-pass.md](./docs/webrtc-video-first-pass.md)
+Complete robot guide: [docs/complete-robot.md](./docs/complete-robot.md)
+WebRTC video path: [docs/webrtc-video-first-pass.md](./docs/webrtc-video-first-pass.md)
 ESP32 serial ESC control: [docs/esp32-serial-esc-control.md](./docs/esp32-serial-esc-control.md)
 
-## Current Tested Setup
+## Complete Robot Setup
 
-The most reliable development path in this repo is:
+The completed robot baseline in this repo is:
 
 - PC: runs the backend and serves the web app
-- Raspberry Pi: runs `pi/gateway.py`
-- Web app: shows the two Pi camera feeds, exposes an arm/disarm control, and sends arrow-key drive commands
-- Pi gateway: prints commands in echo mode or forwards motor commands over serial to the ESP32
-- ESP32: generates the left/right ESC pulses with hardware-timed PWM and a neutral watchdog
+- Raspberry Pi 5: runs `pi/gateway.py` for controls, telemetry, LiDAR, and
+  robot-side status
+- WebRTC publisher: runs `pi/webrtc_publisher.py` for low-latency front/back
+  camera video
+- Web app: shows the two Pi camera feeds, renders LiDAR, exposes arm/disarm,
+  and sends arrow-key drive commands
+- ESP32: receives serial commands from the Pi and generates hardware-timed
+  left/right ESC pulses with a neutral watchdog
 
-That flow is useful before adding motor hardware.
+Echo mode remains available for bench testing the command path before motors are
+armed.
 
 ## Project Layout
 
@@ -26,11 +32,11 @@ That flow is useful before adding motor hardware.
 - `pi/`: Raspberry Pi gateway (`gateway.py`)
 - `esp/`: ESP32 serial-controlled ESC firmware
 - `docs/`: architecture and protocol notes
+- `chasis/`: STL chassis model
 
-## Technical Description: Current Robot Stack
+## Technical Description: Complete Robot Stack
 
-This section describes what the robot currently consists of according to the
-code in this repository today.
+This section describes the robot stack this repository is built to run.
 
 ### Onboard Hardware
 
@@ -41,9 +47,10 @@ code in this repository today.
   connected to the Pi over USB serial and responsible for hardware-timed
   left/right ESC signal pulses. The default ESP32 GPIO mapping is `GPIO18` for
   the left ESC and `GPIO19` for the right ESC.
-- Two brushless ESC signal leads:
+- Two ESC signal leads:
   connected to the ESP32 signal outputs, with a shared signal ground between
-  the Pi, ESP32, and ESCs.
+  the Pi, ESP32, and ESCs. The checked-in PlatformIO config targets
+  bidirectional ESCs with centered neutral.
 - Two Raspberry Pi NOIR camera modules:
   attached to the Pi camera connectors and treated as the front and back robot
   cameras. The current default mapping is camera index `0` for the front feed and
@@ -51,18 +58,19 @@ code in this repository today.
 - LiDAR sensor:
   connected over USB serial and streamed by the Pi as `lidar.scan` events for
   the frontend map view.
+
 ### Onboard Software
 
 - `pi/gateway.py`:
   the main robot-side process. It connects to the backend as the robot device,
   publishes Pi temperature, camera status, live camera frames, and LiDAR data,
-  and now drives motors in one of three modes: terminal echo, ESP32 serial ESC
+  and drives motors in one of three modes: terminal echo, ESP32 serial ESC
   control, or legacy direct Pi GPIO ESC control.
 - Raspberry Pi camera stack:
   the preferred live-camera path uses `rpicam-vid` or `libcamera-vid`; OpenCV is
   only a fallback when those tools are unavailable.
 - Python dependencies:
-  the Pi gateway currently depends on `websockets`, `pyserial`, and
+  the Pi gateway depends on `websockets`, `pyserial`, and
   `rplidar-roboticia`, with `python3-opencv` optional for the fallback camera
   path.
 - Serial links:
@@ -72,22 +80,22 @@ code in this repository today.
 
 ### Low-Level Control Status
 
-- The robot control path now exists end to end for ESP32 serial ESC control:
+- The primary robot control path is ESP32 serial ESC control:
   web UI -> backend -> Pi gateway -> ESP32 serial -> left/right ESC signal pulses.
-- The web UI does not drive live motors immediately:
-  it must receive `motor.status` from the Pi, you must arm the ESCs explicitly,
-  and held arrow keys are refreshed from the browser while the ESP32 applies its
-  watchdog timeout and neutral fallback.
+- The web UI does not drive live motors immediately. It must receive
+  `motor.status` from the Pi, you must arm the ESCs explicitly, and held arrow
+  keys are refreshed from the browser while the ESP32 applies its watchdog
+  timeout and neutral fallback.
 - The legacy direct Pi ESC path still exists as `PI_MOTOR_DRIVER=esc`, but the
-  current preferred motor path is `PI_MOTOR_DRIVER=esp`.
+  preferred motor path is `PI_MOTOR_DRIVER=esp`.
 
 ### Off-Robot Infrastructure
 
 - Backend server:
-  currently runs on a separate PC and acts as the command broker and realtime
-  fan-out service for UI clients and the Pi.
+  runs on a separate PC and acts as the command broker, WebRTC signaling relay,
+  recording coordinator, and realtime fan-out service for UI clients and the Pi.
 - Web frontend:
-  currently served from the PC, shows the robot camera feeds and LiDAR view, and
+  served from the PC, shows the robot camera feeds and LiDAR view, and
   sends drive commands to the robot. It can also start/stop backend-managed
   recording sessions, pause/resume them mid-run, and download the finished
   fixed-layout MP4 once rendering completes.
@@ -97,10 +105,10 @@ code in this repository today.
 
 ### Practical Summary
 
-What is effectively in the robot today is a Raspberry Pi 5 with two NOIR
-cameras, a LiDAR connected to the Pi, and an ESP32 serial ESC controller.
-What is not yet fully onboard in this repo is the backend/web hosting layer and
-the final hardware-specific ESC calibration for your exact drivetrain.
+The robot is a Raspberry Pi 5 with two NOIR cameras, USB LiDAR, an ESP32 serial
+ESC controller, two ESCs, and the chassis model in this repo. The normal
+development topology keeps backend/web hosting on the PC; move that onto the Pi
+only if the deployment plan changes.
 
 ## Requirements
 
@@ -110,6 +118,7 @@ PC:
 - `python3`
 - `make`
 - PlatformIO CLI (`pio`) for ESP32 firmware builds/uploads
+- macOS Swift command-line toolchain when rendering recording MP4s
 
 Pi:
 
@@ -117,7 +126,7 @@ Pi:
 - `make`
 - a Python virtual environment is strongly recommended
 
-## Quick Start: PC + Pi Echo Mode
+## Quick Start: Echo Bench Test
 
 ### 1. Start the PC side
 
@@ -181,7 +190,7 @@ reserves that device for LiDAR and leaves the ESP motor serial port unassigned
 unless `ESP_SERIAL_PORT` is explicitly set. This keeps LiDAR scans working even
 when the ESP32/motor controller is not plugged in.
 
-For example:
+The complete drive target uses those stable paths like this:
 
 ```bash
 make pi-connect-webrtc-esp PC_IP=192.168.1.25 \
@@ -195,8 +204,8 @@ Open `http://127.0.0.1:8080` on the PC and press the arrow keys.
 
 If two camera modules are attached to the Pi, the main view and side preview use
 camera index `0` as the front feed and camera index `1` as the back feed. The
-WebRTC targets publish both feeds over WebRTC; the older non-WebRTC Pi targets
-still carry camera frames over the backend WebSocket path.
+WebRTC targets publish both feeds over WebRTC; non-WebRTC Pi targets carry
+camera frames over the backend WebSocket path.
 
 To verify both camera indexes outside the webapp/WebRTC path, stop the Pi
 service and run:
@@ -218,10 +227,11 @@ Motor command [echo-only] id=... drive direction=forward speed=0.15 durationMs=3
 Motor command [echo-only] id=... stop
 ```
 
-## Quick Start: PC + ESP32 ESC Mode
+## Quick Start: Complete Robot Drive Mode
 
-This is the mode to use for the current hardware plan. The Raspberry Pi forwards
-commands over serial, and the ESP32 generates the ESC signal pulses.
+This is the normal live-driving mode for the complete robot. The Raspberry Pi
+forwards commands over serial, the ESP32 generates ESC signal pulses, LiDAR
+streams through the gateway, and both cameras publish over WebRTC.
 
 ### 1. Flash the ESP32 firmware
 
@@ -264,18 +274,20 @@ Power rules:
 - Do not tie multiple ESC BEC 5V outputs together.
 - Do not backfeed ESC voltage into Pi or ESP32 GPIO.
 
-### 4. Start ESP32 ESC mode on the Pi
+### 4. Start ESP32 ESC mode and WebRTC video on the Pi
 
 If the Pi is connecting to a PC-hosted backend:
 
 ```bash
-make pi-connect-esp PC_IP=<pc-ip>
+make pi-connect-webrtc-esp PC_IP=<pc-ip>
 ```
 
-Or locally on the Pi without the helper target:
+When possible, pass stable serial paths from `make pi-serial-list`:
 
 ```bash
-PI_MOTOR_DRIVER=esp python3 pi/gateway.py
+make pi-connect-webrtc-esp PC_IP=<pc-ip> \
+  ESP_SERIAL_PORT=/dev/serial/by-id/<esp32-device> \
+  PI_LIDAR_PORT=/dev/serial/by-id/<lidar-device>
 ```
 
 ### 5. Arm and drive from the web app
@@ -289,6 +301,27 @@ PI_MOTOR_DRIVER=esp python3 pi/gateway.py
 The ESP32 keeps both ESCs at neutral on startup, disarm, stop, and watchdog
 timeout. While a key is held, the web app refreshes the `drive` command; if
 those refreshes stop, the ESP32 returns both ESCs to neutral automatically.
+
+## Recording Mode
+
+Backend recording captures LiDAR scans and backend-carried JPEG camera frames.
+The live WebRTC media path is peer-to-peer, so use the non-WebRTC Pi target when
+you need the rendered MP4 to include both camera feeds:
+
+```bash
+make pi-connect-esp PC_IP=<pc-ip> \
+  ESP_SERIAL_PORT=/dev/serial/by-id/<esp32-device> \
+  PI_LIDAR_PORT=/dev/serial/by-id/<lidar-device>
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080?deviceId=pi-01&webrtc=0
+```
+
+Start, pause/resume, and stop recording from the web UI. The backend renders the
+finished session into an MP4 using [backend/scripts/render_recording.swift](./backend/scripts/render_recording.swift).
 
 ## ESP32 ESC Wiring
 
@@ -308,23 +341,21 @@ If your drivetrain is mounted so one side spins the opposite way for the same
 throttle command, compile the firmware with `ESC_LEFT_INVERTED=1` or
 `ESC_RIGHT_INVERTED=1`, or swap motor phase wires where appropriate.
 
-Default pulse behavior:
+The checked-in [esp/platformio.ini](./esp/platformio.ini) config is tuned for
+the complete robot's bidirectional ESCs:
 
-- Forward-only ESCs: low throttle / neutral `1000 us`, forward above neutral
-- The ESP32 arms by holding `ESC_ARM_PULSE_US` for `ESC_ARM_DELAY_MS`
-- The firmware clamps requested speed to `ESC_MAX_SPEED`
-- If command refresh stops for `ESC_WATCHDOG_TIMEOUT_MS`, both ESCs return to neutral
+- `ESC_BIDIRECTIONAL=1`
+- `ESC_ARM_PULSE_US=1500`
+- `ESC_NEUTRAL_PULSE_US=1500`
+- `ESC_FORWARD_MIN_PULSE_US=1560`
+- `ESC_FORWARD_MAX_PULSE_US=1900`
+- `ESC_REVERSE_MIN_PULSE_US=1440`
+- `ESC_REVERSE_MAX_PULSE_US=1100`
+- `ESC_MAX_SPEED=0.35f`
 
-If you are using bidirectional car ESCs instead, set at least:
-
-```ini
-build_flags =
-  -D ESC_BIDIRECTIONAL=1
-  -D ESC_ARM_PULSE_US=1500
-  -D ESC_NEUTRAL_PULSE_US=1500
-  -D ESC_FORWARD_MIN_PULSE_US=1560
-  -D ESC_FORWARD_MAX_PULSE_US=1900
-```
+The ESP32 arms by holding `ESC_ARM_PULSE_US` for `ESC_ARM_DELAY_MS`, clamps
+requested speed to `ESC_MAX_SPEED`, and returns both ESCs to neutral if command
+refresh stops for `ESC_WATCHDOG_TIMEOUT_MS`.
 
 Detailed setup: [docs/esp32-serial-esc-control.md](./docs/esp32-serial-esc-control.md)
 
@@ -369,8 +400,10 @@ Detailed setup: [docs/esp32-serial-esc-control.md](./docs/esp32-serial-esc-contr
 
 ## Additional Docs
 
+- Complete robot guide: [docs/complete-robot.md](./docs/complete-robot.md)
 - Pi gateway: [pi/README.md](./pi/README.md)
 - ESP32 firmware: [esp/README.md](./esp/README.md)
 - ESP32 ESC setup: [docs/esp32-serial-esc-control.md](./docs/esp32-serial-esc-control.md)
+- WebRTC video path: [docs/webrtc-video-first-pass.md](./docs/webrtc-video-first-pass.md)
 - Backend API and WebSocket protocol: [backend/README.md](./backend/README.md)
 - End-to-end architecture: [docs/edge-system-base.md](./docs/edge-system-base.md)

@@ -4,8 +4,8 @@ This is the legacy fallback path. The current preferred motor setup is
 [ESP32 Serial ESC Control](./esp32-serial-esc-control.md), where the Pi sends
 serial commands and the ESP32 generates the ESC pulses.
 
-This document describes the exact drive setup this repo is built around when the
-Raspberry Pi drives two ESCs directly from GPIO.
+This document describes the fallback setup for driving two ESCs directly from
+Raspberry Pi GPIO. It is not the complete robot's normal operating mode.
 
 ## Topology
 
@@ -21,6 +21,9 @@ In this setup:
 - The Pi generates RC-style control pulses for the left and right ESCs.
 - The front camera, rear camera, and LiDAR stay attached to the Pi.
 - The ESP32 path is not used.
+
+For the complete robot operating sequence, use
+[Complete Robot Guide](./complete-robot.md).
 
 ## Supported Hardware
 

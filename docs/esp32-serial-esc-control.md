@@ -1,7 +1,6 @@
 # ESP32 Serial ESC Control
 
-This is the preferred ESC path for the robot when Raspberry Pi PWM is causing
-stutter:
+This is the primary ESC path for the complete robot:
 
 `web app -> backend -> pi/gateway.py -> USB serial -> ESP32 -> left/right ESC signal pulses`
 
@@ -10,7 +9,7 @@ ESP32 owns the timing-sensitive ESC signal generation.
 
 ## Hardware Wiring
 
-Default wiring:
+Default signal wiring:
 
 | Connection | Default |
 | --- | --- |
@@ -71,8 +70,18 @@ The ESP32 serial port defaults to `/dev/ttyUSB0`. Override it when needed:
 ESP_SERIAL_PORT=/dev/ttyACM0 make pi-connect-esp PC_IP=<pc-ip>
 ```
 
-When `PI_MOTOR_DRIVER=esp`, the gateway defaults the LiDAR serial port to
-`/dev/ttyUSB1` so it does not collide with the ESP32 serial link.
+On the complete robot, prefer stable serial paths from `make pi-serial-list`:
+
+```bash
+make pi-connect-webrtc-esp PC_IP=<pc-ip> \
+  ESP_SERIAL_PORT=/dev/serial/by-id/<esp32-device> \
+  PI_LIDAR_PORT=/dev/serial/by-id/<lidar-device>
+```
+
+When `PI_MOTOR_DRIVER=esp`, the gateway tries to keep the LiDAR and ESP32 on
+separate serial devices. If only one USB serial device is detected and LiDAR is
+enabled, the gateway reserves that device for LiDAR unless `ESP_SERIAL_PORT` is
+explicitly set.
 
 ## Safety Contract
 
@@ -109,9 +118,9 @@ Controls:
 Each arrow key press sends a `drive` command with a short `durationMs`; the ESP32
 watchdog returns to neutral when key-repeat stops.
 
-## Firmware Defaults
+## Firmware Configuration
 
-The defaults live in [esp/src/main.cpp](../esp/src/main.cpp):
+Compile defaults live in [esp/src/main.cpp](../esp/src/main.cpp):
 
 | Setting | Default |
 | --- | --- |
@@ -128,11 +137,23 @@ The defaults live in [esp/src/main.cpp](../esp/src/main.cpp):
 | `ESC_RAMP_STEP_US` | `8` |
 | `ESC_UPDATE_HZ` | `50` |
 
-Override firmware settings with PlatformIO `build_flags` in
-[esp/platformio.ini](../esp/platformio.ini) if your wiring or ESC calibration
-differs.
+The checked-in [esp/platformio.ini](../esp/platformio.ini) overrides those
+defaults for the complete robot's bidirectional ESCs:
 
-For bidirectional car ESCs, start with neutral-centered values:
+| Setting | Current repo value |
+| --- | --- |
+| `ESC_BIDIRECTIONAL` | `1` |
+| `ESC_ARM_PULSE_US` | `1500` |
+| `ESC_NEUTRAL_PULSE_US` | `1500` |
+| `ESC_FORWARD_MIN_PULSE_US` | `1560` |
+| `ESC_FORWARD_MAX_PULSE_US` | `1900` |
+| `ESC_REVERSE_MIN_PULSE_US` | `1440` |
+| `ESC_REVERSE_MAX_PULSE_US` | `1100` |
+| `ESC_MAX_SPEED` | `0.35f` |
+
+Override firmware settings with PlatformIO `build_flags` if your wiring or ESC
+calibration differs. For another bidirectional setup, start with
+neutral-centered values:
 
 ```ini
 build_flags =
@@ -141,10 +162,16 @@ build_flags =
   -D ESC_NEUTRAL_PULSE_US=1500
   -D ESC_FORWARD_MIN_PULSE_US=1560
   -D ESC_FORWARD_MAX_PULSE_US=1900
+  -D ESC_REVERSE_MIN_PULSE_US=1440
+  -D ESC_REVERSE_MAX_PULSE_US=1100
 ```
+
+If one side of the drivetrain is mechanically mirrored, use
+`ESC_LEFT_INVERTED=1` or `ESC_RIGHT_INVERTED=1` rather than changing the browser
+or backend direction mapping.
 
 ## Legacy Pi GPIO ESC Mode
 
-The old direct Pi GPIO path is still available as `PI_MOTOR_DRIVER=esc` and
+The legacy direct Pi GPIO path is still available as `PI_MOTOR_DRIVER=esc` and
 `make pi-connect-esc`, but it is no longer the recommended setup for this robot.
 Use it only for comparison or fallback testing.

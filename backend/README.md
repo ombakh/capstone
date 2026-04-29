@@ -1,6 +1,7 @@
 # Backend Gateway
 
-Realtime gateway between Raspberry Pi devices and the web frontend.
+Realtime gateway between the complete robot's Raspberry Pi gateway, WebRTC
+publisher, and web frontend.
 
 This service is the command broker for the project:
 
@@ -8,8 +9,9 @@ This service is the command broker for the project:
 - Pi gateways connect as `role=pi`
 - UI commands are validated, queued if needed, and forwarded to the target Pi
 - Pi events and acknowledgements are broadcast back to connected UI clients
-- The backend can record LiDAR scans and both camera streams into session folders
-  and render the finished session as a downloadable MP4
+- WebRTC signaling is relayed between the browser viewer and Pi publisher
+- The backend can record LiDAR scans and backend-carried camera frames into
+  session folders and render the finished session as a downloadable MP4
 
 ## Run
 
@@ -59,7 +61,9 @@ Expected response shape:
   "ok": true,
   "uptimeSeconds": 12,
   "connectedUiClients": 1,
-  "connectedPiClients": 1
+  "connectedPiClients": 1,
+  "connectedWebRtcPiClients": 1,
+  "connectedWebRtcViewerClients": 1
 }
 ```
 
@@ -131,10 +135,14 @@ The backend stores:
 - `manifest.json`
 
 When stopped, the backend renders the session into a fixed-layout `.mp4` with a
-large LiDAR view and both camera feeds. The web UI keeps the download arrow
-hidden until that MP4 is ready.
+large LiDAR view and any camera feeds received on the backend WebSocket path.
+The web UI keeps the download arrow hidden until that MP4 is ready.
 The default renderer is the Swift script in `backend/scripts/`, so the host
 running the backend must have the macOS command-line Swift toolchain available.
+
+The low-latency WebRTC media path is peer-to-peer and is not recorded by the
+backend. For MP4s with both camera feeds, run the Pi gateway JPEG camera path
+and open the browser with `?webrtc=0`.
 
 ## WebSocket
 
@@ -148,7 +156,7 @@ Message types:
 - Pi -> backend: `pi:event`, `pi:ack`, `pi:heartbeat`
 - Pi -> backend: `pi:camera_frame`
 - UI -> backend: `ui:command`
-- Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`, `camera:frame`, `recording:status`
+- Backend -> UI: `snapshot`, `pi:event`, `pi:status`, `pi:ack`, `command:accepted`, `command:delivered`, `camera:frame`, `recording:status`, `pi:webrtc-status`
 - Backend -> Pi: `ui:command`
 
 WebRTC signaling path: `/webrtc`
@@ -158,16 +166,21 @@ WebRTC signaling path: `/webrtc`
 - Signaling messages: `viewer:ready`, `viewer:profile`, `webrtc:offer`, `webrtc:answer`, `webrtc:ice`
 - The backend relays only signaling. WebRTC video media flows peer-to-peer.
 
-See [WebRTC Video First Pass](../docs/webrtc-video-first-pass.md) for the run flow.
+See [WebRTC Video Path](../docs/webrtc-video-first-pass.md) for the run flow.
 
 ## Common Development Topology
 
-The currently documented development flow is:
+The complete robot development flow is:
 
 - PC runs this backend on port `3000`
 - PC serves the web app on port `8080`
 - Pi runs `pi/gateway.py`
+- Pi runs `pi/webrtc_publisher.py` for low-latency live video when using a
+  WebRTC target
 - Pi connects to the PC over LAN or Tailscale
 
 If the Pi cannot reach the PC on campus Wi-Fi, use a Tailscale IP or another
 network that allows peer-to-peer traffic.
+
+See [Complete Robot Guide](../docs/complete-robot.md) for the full bring-up
+sequence.

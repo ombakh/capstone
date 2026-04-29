@@ -1,12 +1,12 @@
-# Raspberry Pi Gateway Base
+# Raspberry Pi Robot Gateway
 
-`gateway.py` is the bridge between backend, optional sensors, and the robot-side
-motor controller.
+`gateway.py` is the robot-side bridge between the PC backend, onboard sensors,
+and the motor controller.
 
 Responsibilities:
 
 - Connect to backend WebSocket as a Pi device (`role=pi`).
-- Print incoming drive commands in echo mode for no-hardware testing.
+- Print incoming drive commands in echo mode for bench testing.
 - Forward drive/motor commands to an ESP32 over serial for ESC pulse generation.
 - Keep the legacy direct Raspberry Pi GPIO ESC path available for fallback tests.
 - Publish motor status, camera status, LiDAR status, temperature, and ESP telemetry.
@@ -16,7 +16,7 @@ Responsibilities:
 The WebRTC video path runs as a separate Pi publisher process:
 `pi/webrtc_publisher.py`. Use `PI_CAMERA_JPEG_ENABLED=0` on `gateway.py` when
 the WebRTC publisher owns the camera. See
-[WebRTC Video First Pass](../docs/webrtc-video-first-pass.md).
+[WebRTC Video Path](../docs/webrtc-video-first-pass.md).
 
 ## Install
 
@@ -93,14 +93,36 @@ make pi-connect-esc PC_IP=<pc-ip>
 
 If the local Wi-Fi blocks device-to-device traffic, use the PC's Tailscale IP.
 
-With two camera modules attached, the web UI will show the live Pi feeds through
-the backend connection. The default mapping is camera index `0` for the front
-feed and camera index `1` for the back feed. The web settings menu can adjust
-the live camera FPS at runtime across both feeds.
+With two camera modules attached, the web UI can show live Pi feeds through the
+WebRTC publisher or through backend-carried JPEG frames, depending on the run
+target. The default mapping is camera index `0` for the front feed and camera
+index `1` for the back feed. The web settings menu can adjust the JPEG camera
+FPS at runtime; WebRTC profiles are set with `WEBRTC_CAMERA_*` environment
+variables.
 
-## Verified Development Flow
+## Complete Robot Run Profiles
 
-Echo mode:
+Low-latency driving profile:
+
+1. Start the backend and web app on the PC with `make pc-start`.
+2. Flash the ESP32 firmware from `esp/`.
+3. Wire ESC signal and ground leads to the ESP32, with Pi and ESP32 grounds common.
+4. Activate the Pi virtual environment.
+5. Run `make pi-serial-list` and prefer stable `/dev/serial/by-id/...` paths.
+6. Run `make pi-connect-webrtc-esp PC_IP=<pc-ip-or-tailscale-ip>`.
+7. Open the web app, wait for WebRTC, LiDAR, and motor status, click
+   `Arm Motors`, then use the arrow keys.
+
+Recording profile:
+
+1. Start the backend and web app on the PC with `make pc-start`.
+2. Activate the Pi virtual environment.
+3. Run `make pi-connect-esp PC_IP=<pc-ip-or-tailscale-ip>`.
+4. Open `http://127.0.0.1:8080?deviceId=pi-01&webrtc=0`.
+5. Use the web recording controls to capture LiDAR plus backend-carried JPEG
+   camera frames.
+
+Echo bench profile:
 
 1. Start the backend and web app on the PC with `make pc-start`.
 2. Activate the Pi virtual environment.
@@ -108,19 +130,14 @@ Echo mode:
 4. Press the web app arrow keys on the PC.
 5. Watch the Pi terminal print the received motor commands.
 
-ESP32 ESC mode:
-
-1. Start the backend and web app on the PC with `make pc-start`.
-2. Flash the ESP32 firmware from `esp/`.
-3. Wire ESC signal and ground leads to the ESP32, with Pi and ESP32 grounds common.
-4. Activate the Pi virtual environment and run `make pi-connect-esp PC_IP=<pc-ip-or-tailscale-ip>`.
-5. Open the web app, wait for the motor panel, click `Arm Motors`, then use the arrow keys.
+See the full operating sequence in
+[Complete Robot Guide](../docs/complete-robot.md).
 
 ## ESP32 Serial ESC Control
 
-This is the preferred motor path. It assumes ESCs that accept standard RC
-servo-style control pulses. DShot-only ESCs are not compatible with this
-firmware.
+This is the complete robot's primary motor path. It assumes ESCs that accept
+standard RC servo-style control pulses. DShot-only ESCs are not compatible with
+this firmware.
 
 Default wiring:
 
@@ -150,9 +167,9 @@ Detailed setup: [ESP32 Serial ESC Control](../docs/esp32-serial-esc-control.md).
 ## Legacy Direct Pi ESC Control
 
 This fallback mode assumes ESCs that accept standard RC servo-style control
-pulses and uses Raspberry Pi GPIO timing through `lgpio`. The current robot
-setup prefers the ESP32 serial path above because the Pi-generated PWM has shown
-motor stutter.
+pulses and uses Raspberry Pi GPIO timing through `lgpio`. The complete robot
+uses the ESP32 serial path above; keep this path for comparison or emergency
+fallback testing.
 
 Default GPIO wiring:
 

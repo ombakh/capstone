@@ -1,8 +1,9 @@
-# WebRTC Video First Pass
+# WebRTC Video Path
 
-This is the first minimal WebRTC video path for the robot. It keeps the
-existing control and telemetry path on the current backend `/ws` socket, and
-adds a separate WebRTC signaling socket at `/webrtc`.
+This is the low-latency live video path for the complete robot. It keeps
+control, telemetry, LiDAR, and recording controls on the backend `/ws` socket,
+and uses a separate WebRTC signaling socket at `/webrtc` for front/back camera
+media. The file name still says `first-pass` for link compatibility.
 
 ## Architecture Overview
 
@@ -30,7 +31,7 @@ Raspberry Pi
   - publishes configured latest-frame-only camera tracks from pi/webrtc_camera.py
 ```
 
-The first negotiation flow is:
+The negotiation flow is:
 
 1. Browser opens `/webrtc?role=viewer&deviceId=pi-01`.
 2. Pi publisher opens `/webrtc?role=pi&deviceId=pi-01`.
@@ -71,7 +72,7 @@ pi/gateway.py               existing Pi gateway plus PI_CAMERA_JPEG_ENABLED
 pi/webrtc_camera.py         rpicam/libcamera and OpenCV aiortc video tracks
 pi/webrtc_publisher.py      Pi-side WebRTC publisher
 pi/requirements.txt         Pi Python dependencies
-Makefile                    run targets for the first WebRTC path
+Makefile                    run targets for the WebRTC path
 ```
 
 ## Run Steps
@@ -121,21 +122,21 @@ ESP32 serial ESC controls:
 make pi-connect-webrtc-esp PC_IP=<pc-ip-or-tailscale-ip>
 ```
 
-Those targets start two Pi processes:
+Those targets start the complete live-driving Pi profile with two Pi processes:
 
 - `pi/gateway.py` for the existing controls and telemetry path
 - `pi/webrtc_publisher.py` for the WebRTC video path
 
-They also set `PI_CAMERA_JPEG_ENABLED=0` so the old JPEG frame sender does not
-open the camera at the same time as the WebRTC publisher.
+They also set `PI_CAMERA_JPEG_ENABLED=0` so the gateway JPEG frame sender does
+not open the camera at the same time as the WebRTC publisher.
 
 The default WebRTC publisher starts both configured camera tracks. Set
 `WEBRTC_CAMERA_NAMES=front` only when you intentionally want to test or run one
 camera.
 
 LiDAR still runs through `pi/gateway.py`. The Makefile no longer forces a LiDAR
-serial port by default; pass `PI_LIDAR_PORT=/dev/ttyUSB1` only when the gateway
-startup log shows it is probing the wrong device.
+serial port by default; pass `PI_LIDAR_PORT=/dev/serial/by-id/<lidar-device>`
+when the gateway startup log shows it is probing the wrong device.
 
 ### 4. Open the browser
 
@@ -269,22 +270,19 @@ More stability:
 3. If ICE is unstable off-LAN, add TURN next; this pass intentionally does not
    add TURN yet.
 
-## Current Limits
+## Operational Boundaries
 
 - Both configured cameras publish by default; set `WEBRTC_CAMERA_NAMES=front`
   for one-camera bench tests.
 - Robot controls still use the existing backend `/ws` path.
 - The backend does not forward video media. It only forwards signaling.
-- Backend-managed camera recording still depends on the old JPEG frame path and
-  is not part of this first WebRTC slice.
+- Backend-managed camera recording depends on the gateway JPEG frame path, not
+  WebRTC media. Use `make pi-connect-esp` and open the browser with `?webrtc=0`
+  when the rendered MP4 must include both camera feeds.
 - TURN server support is not wired yet.
 
-## Next-Step Plan
+## Related Guides
 
-1. Add `RTCDataChannel` for control and telemetry after the video path is stable.
-   Keep `/ws` controls as fallback during the migration.
-2. Add TURN/STUN configuration to both the browser `RTCPeerConnection` and the
-   Pi publisher `RTCPeerConnection`.
-3. Add camera switching by signaling the desired camera over the existing control
-   path first, then later over the data channel.
-4. Move recording to WebRTC-compatible capture after the live path is reliable.
+- Complete robot bring-up: [Complete Robot Guide](./complete-robot.md)
+- Backend protocol and recording API: [Backend Gateway](../backend/README.md)
+- Pi gateway and run targets: [Raspberry Pi Robot Gateway](../pi/README.md)
